@@ -1,0 +1,17 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# Audio artifacts
+backend/audio_files/
+backend/stems/
+
+# Node
+frontend/node_modules/
+frontend/.next/
