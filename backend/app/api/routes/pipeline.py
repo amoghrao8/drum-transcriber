@@ -22,15 +22,12 @@ from pydantic import BaseModel
 from app.core.job_store import create_job, get_job, update_job
 from app.services.audio_extractor import extract_audio
 from app.services.stem_separator import separate_stems
-from app.services.drum_analyzer import DrumAnalyzer
+from app.services.drum_analyzer import transcribe as transcribe_drums
 from app.services.transcription_store import save_transcription, save_exercises
-from app.services.music_teacher import summarize_transcription, generate_lesson
+from app.services.music_teacher import build_semantic_log, generate_lesson
 from app.core.config import STEMS_OUTPUT_DIR
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
-
-# Reuse a single analyzer — frequency masks built once at import time
-_analyzer = DrumAnalyzer()
 
 
 # ---------------------------------------------------------------------------
@@ -72,15 +69,15 @@ async def _run(pipeline_id: str, youtube_url: str) -> None:
             step=3,
             step_name="Transcribing hits",
             pct=62,
-            message="Running FFT-based onset detection and frequency classification "
-                    "to identify every kick, snare, ghost note, and hi-hat.",
+            message="Split-band onset detection: kick (50-200 Hz), snare (200-5 kHz), "
+                    "hi-hat (5 kHz+). Quantising to 16th-note grid.",
         )
         drums_wav = STEMS_OUTPUT_DIR / f"{job_id}_drums.wav"
         loop = asyncio.get_event_loop()
-        events: list[dict] = await loop.run_in_executor(
-            None, partial(_analyzer.transcribe, drums_wav)
+        events, midi_obj, metadata = await loop.run_in_executor(
+            None, partial(transcribe_drums, drums_wav)
         )
-        await save_transcription(job_id, events, youtube_url)
+        await save_transcription(job_id, events, youtube_url, metadata)
         progress(pct=75)
 
         # ── Step 4: Generate lesson ────────────────────────────────────────
@@ -88,11 +85,11 @@ async def _run(pipeline_id: str, youtube_url: str) -> None:
             step=4,
             step_name="Generating AI lesson",
             pct=77,
-            message="Building the 16th-note grid and sending it to Qwen 2.5 "
+            message="Building semantic MIDI log and sending it to Qwen 2.5 "
                     "to generate your personalised drum lesson.",
         )
-        grid = summarize_transcription(events)
-        lesson = await generate_lesson(job_id, grid)
+        semantic_log = build_semantic_log(events, metadata)
+        lesson = await generate_lesson(job_id, semantic_log)
         await save_exercises(job_id, lesson)
 
         progress(

@@ -3,25 +3,42 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
+// ---------------------------------------------------------------------------
+// Types — mirror the MIDI-first backend schema
+// ---------------------------------------------------------------------------
+
 export interface DrumEvent {
-  time: number;
-  type: 'kick' | 'snare' | 'snare_ghost' | 'hat';
-  velocity: number;
+  note:     number;   // GM MIDI drum note (36=kick, 38=snare, 42=hh, etc.)
+  time:     number;   // seconds (quantised to 16th-note grid)
+  velocity: number;   // 0-127
+  type:     string;   // "kick" | "snare" | "hihat_closed" | "hihat_open" | "crash" | "ride" | "china"
+  ghost:    boolean;  // velocity < 30th percentile of snare hits
+  duration: number;   // seconds
+}
+
+export interface TrackMetadata {
+  bpm:            number;
+  time_signature: string;   // e.g. "4/4"
+  beats_per_bar:  number;
+  beat_unit:      number;
+  duration:       number;   // total seconds
+  event_count:    number;
 }
 
 export interface Transcription {
-  id: string;
-  job_id: string;
+  id:          string;
+  job_id:      string;
   youtube_url: string | null;
   event_count: number;
-  events: DrumEvent[];
-  exercises: string | null;
-  created_at: string;
+  events:      DrumEvent[];
+  metadata:    TrackMetadata | null;
+  exercises:   string | null;
+  created_at:  string;
 }
 
 interface UseTranscriptionOptions {
   youtubeUrl?: string;
-  jobId?: string;
+  jobId?:      string;
 }
 
 function extractVideoId(url: string): string | null {
@@ -32,9 +49,9 @@ function extractVideoId(url: string): string | null {
 }
 
 export function useTranscription({ youtubeUrl, jobId }: UseTranscriptionOptions) {
-  const [data, setData] = useState<Transcription | null>(null);
+  const [data,    setData]    = useState<Transcription | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error,   setError]   = useState<string | null>(null);
 
   useEffect(() => {
     if (!youtubeUrl && !jobId) return;
@@ -50,7 +67,7 @@ export function useTranscription({ youtubeUrl, jobId }: UseTranscriptionOptions)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let query: any = supabase
           .from('drum_transcriptions')
-          .select('*')
+          .select('id, job_id, youtube_url, event_count, events, metadata, exercises, created_at')
           .order('created_at', { ascending: false })
           .limit(1);
 
@@ -69,7 +86,7 @@ export function useTranscription({ youtubeUrl, jobId }: UseTranscriptionOptions)
         if (sbError) throw new Error(sbError.message);
         if (!rows || rows.length === 0) {
           throw new Error(
-            "No transcription found. Make sure the analysis pipeline has been run for this URL."
+            'No transcription found. Make sure the analysis pipeline has been run for this URL.'
           );
         }
 

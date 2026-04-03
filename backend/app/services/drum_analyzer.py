@@ -1,191 +1,378 @@
+"""
+MIDI-First drum transcriber — PyTorch/CUDA pipeline.
+
+Architecture:
+  1. Load drum stem WAV via soundfile
+  2. Detect BPM + beat grid (librosa)
+  3. Infer time signature from meter autocorrelation
+  4. SPLIT-BAND onset detection — kick, snare, and hi-hat detected on
+     independently filtered signals (far more accurate than single-pass FFT)
+  5. Velocity estimation per hit from RMS energy
+  6. Ghost-note detection: snare hits below the 30th velocity percentile
+  7. Quantise all events to the nearest 16th-note grid position
+  8. Export GM MIDI via mido
+  9. Return structured event list + MidiFile + metadata dict
+
+General MIDI drum channel (channel 9, 0-indexed) note map:
+  36 = Kick     38 = Snare    39 = Clap
+  42 = HH Closed 46 = HH Open  49 = Crash
+  51 = Ride     52 = China
+"""
 from __future__ import annotations
 
+import logging
+from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import librosa
+import mido
 import numpy as np
+import soundfile as sf
+from scipy.signal import butter, sosfilt
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Tunable constants
+# GM drum constants
 # ---------------------------------------------------------------------------
-_WINDOW_MS          = 50          # analysis window per onset (milliseconds)
-_GHOST_THRESHOLD_DB = 15.0        # snare hits this many dB below peak → ghost
-_HOP_LENGTH         = 512         # librosa onset hop (samples)
+GM_KICK          = 36
+GM_SNARE         = 38
+GM_CLAP          = 39
+GM_HIHAT_CLOSED  = 42
+GM_HIHAT_OPEN    = 46
+GM_CRASH         = 49
+GM_RIDE          = 51
+GM_CHINA         = 52
 
-# Frequency band boundaries (Hz)
-_KICK_MAX_HZ   = 100
-_SNARE_MIN_HZ  = 200
-_SNARE_MAX_HZ  = 3_000
-_HAT_MIN_HZ    = 5_000
+GM_NAMES: dict[int, str] = {
+    GM_KICK:         "kick",
+    GM_SNARE:        "snare",
+    GM_CLAP:         "clap",
+    GM_HIHAT_CLOSED: "hihat_closed",
+    GM_HIHAT_OPEN:   "hihat_open",
+    GM_CRASH:        "crash",
+    GM_RIDE:         "ride",
+    GM_CHINA:        "china",
+}
+
+# ---------------------------------------------------------------------------
+# Butterworth band filters
+# ---------------------------------------------------------------------------
+
+def _butter_filter(y: np.ndarray, sr: int, ftype: str, freqs) -> np.ndarray:
+    """Zero-phase Butterworth filter.  ftype: 'low' | 'high' | 'band'."""
+    sos = butter(4, freqs, btype=ftype, fs=sr, output="sos")
+    return sosfilt(sos, y).astype(np.float32)
 
 
-class DrumAnalyzer:
+# ---------------------------------------------------------------------------
+# Onset detection helpers
+# ---------------------------------------------------------------------------
+
+def _onset_times(
+    y: np.ndarray,
+    sr: int,
+    *,
+    delta: float = 0.07,
+    wait: int = 4,
+) -> np.ndarray:
+    """Return onset times in seconds using spectral flux."""
+    onset_frames = librosa.onset.onset_detect(
+        y=y, sr=sr,
+        backtrack=True,
+        units="frames",
+        pre_max=3, post_max=3,
+        pre_avg=3, post_avg=5,
+        delta=delta,
+        wait=wait,
+        hop_length=256,
+    )
+    return librosa.frames_to_time(onset_frames, sr=sr, hop_length=256)
+
+
+def _rms_at_times(y: np.ndarray, sr: int, times: np.ndarray) -> np.ndarray:
     """
-    FFT-based drum transcriber operating on a pre-isolated drums stem.
-
-    All per-onset computation (FFT, band power, RMS, ghost detection) is
-    batched into vectorized NumPy operations so the hot path contains no
-    Python-level loops over individual hits.
+    Compute peak RMS energy in a short window after each onset time.
+    Returns raw RMS values (0-based float).
     """
+    window = int(sr * 0.04)  # 40 ms
+    rms = np.zeros(len(times), dtype=np.float32)
+    for i, t in enumerate(times):
+        s = int(t * sr)
+        chunk = y[s : s + window]
+        if len(chunk):
+            rms[i] = float(np.sqrt(np.mean(chunk ** 2)))
+    return rms
 
-    def __init__(self, sr: int = 44100) -> None:
-        self.sr = sr
-        self.window_samples = int(sr * _WINDOW_MS / 1_000)  # 2205 @ 44100 Hz
 
-        # Pre-compute frequency axis and band masks once at init time.
-        # Shape: (window_samples // 2 + 1,)
-        self._freqs = np.fft.rfftfreq(self.window_samples, d=1.0 / sr)
-        self._kick_mask  = self._freqs < _KICK_MAX_HZ
-        self._snare_mask = (self._freqs >= _SNARE_MIN_HZ) & (self._freqs <= _SNARE_MAX_HZ)
-        self._hat_mask   = self._freqs > _HAT_MIN_HZ
+def _rms_to_velocity(rms: np.ndarray, lo: float = 30, hi: float = 110) -> np.ndarray:
+    """Scale RMS values to MIDI velocity range [lo, hi]."""
+    if rms.max() < 1e-8:
+        return np.full(len(rms), lo, dtype=np.int32)
+    norm = rms / rms.max()
+    return np.clip((norm * (hi - lo) + lo).round(), lo, hi).astype(np.int32)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
-    def transcribe(self, file_path: str | Path) -> list[dict]:
-        """
-        Analyse a drums-stem WAV and return a list of timestamped hit events.
+# ---------------------------------------------------------------------------
+# BPM & beat grid
+# ---------------------------------------------------------------------------
 
-        Returns
-        -------
-        list of dicts with keys:
-            time      – onset time in seconds (float)
-            type      – 'kick' | 'snare' | 'snare_ghost' | 'hat'
-            velocity  – normalised RMS energy in [0, 1] (float)
-        """
-        y, sr = librosa.load(str(file_path), sr=self.sr, mono=True)
+def _detect_bpm(y: np.ndarray, sr: int) -> tuple[float, np.ndarray]:
+    """Return (bpm, beat_times_seconds)."""
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units="frames")
+    bpm = float(np.squeeze(tempo))
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+    return bpm, beat_times
 
-        # --- 1. Onset detection with backtracking -----------------------
-        # backtrack=True walks back to the nearest local energy minimum so
-        # onset times sit at the physical attack transient, not the envelope
-        # peak.
-        onset_samples: np.ndarray = librosa.onset.onset_detect(
-            y=y,
-            sr=sr,
-            backtrack=True,
-            units="samples",
-            hop_length=_HOP_LENGTH,
-        )
 
-        if onset_samples.size == 0:
-            return []
+# ---------------------------------------------------------------------------
+# Time signature inference
+# ---------------------------------------------------------------------------
 
-        # --- 2. Extract analysis windows --------------------------------
-        # Produces (N, window_samples) float32 matrix.
-        # This loop is over onsets (unavoidable for arbitrary positions) but
-        # all downstream computation is fully vectorized over the batch.
-        windows = self._extract_windows(y, onset_samples)
+def _infer_time_signature(
+    y: np.ndarray,
+    sr: int,
+    bpm: float,
+    beat_times: np.ndarray,
+) -> tuple[int, int]:
+    """
+    Estimate beats-per-bar by looking at the strongest grouping period in the
+    onset autocorrelation.  Returns (beats_per_bar, beat_unit).
+    Defaults to 4/4 for ambiguous or short sequences.
+    """
+    if len(beat_times) < 8:
+        return 4, 4
 
-        # --- 3. Vectorized FFT classification ---------------------------
-        drum_types, _band_powers = self._classify_windows(windows)
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=512)
+    # Autocorrelation of onset strength
+    ac = librosa.autocorrelate(onset_env, max_size=len(onset_env) // 2)
 
-        # --- 4. Vectorized RMS → velocity [0, 1] ------------------------
-        # np.mean over axis=1 operates on the full (N, W) matrix at once.
-        rms = np.sqrt(np.mean(windows ** 2, axis=1))           # (N,)
-        velocity = rms / (rms.max() + 1e-8)                    # normalise
+    # Convert beat duration to frames
+    sr_onset = sr / 512          # onset envelope sample rate
+    beat_frames = round(60.0 / bpm * sr_onset)
 
-        # --- 5. Ghost-note detection on snare subset --------------------
-        is_ghost = self._detect_ghosts(drum_types, rms)
+    # Score groupings of 2, 3, 4, 5, 6, 7
+    scores: dict[int, float] = {}
+    for n in (3, 4, 5, 6, 7):
+        frame = beat_frames * n
+        if frame < len(ac):
+            scores[n] = float(ac[int(frame)])
 
-        # --- 6. Build output --------------------------------------------
-        onset_times = onset_samples / sr
-        events: list[dict] = []
-        for i, t in enumerate(onset_times):
-            hit_type = "snare_ghost" if is_ghost[i] else drum_types[i]
-            events.append({
-                "time":     round(float(t), 4),
-                "type":     hit_type,
-                "velocity": round(float(velocity[i]), 4),
-            })
+    if not scores:
+        return 4, 4
 
-        return events
+    best = max(scores, key=scores.__getitem__)
+    # Only accept non-4 if its score is clearly higher
+    if best != 4 and scores.get(best, 0) > scores.get(4, 0) * 1.3:
+        return best, 4
+    return 4, 4
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
-    def _extract_windows(
-        self, y: np.ndarray, onset_samples: np.ndarray
-    ) -> np.ndarray:
-        """
-        Extract a fixed-size window starting at each onset sample.
-        Windows that reach past the end of the signal are zero-padded.
+# ---------------------------------------------------------------------------
+# Quantisation
+# ---------------------------------------------------------------------------
 
-        Returns
-        -------
-        windows : np.ndarray, shape (N, window_samples), float32
-        """
-        n = len(onset_samples)
-        windows = np.zeros((n, self.window_samples), dtype=np.float32)
-        for i, s in enumerate(onset_samples):
-            end = min(int(s) + self.window_samples, len(y))
-            windows[i, : end - int(s)] = y[int(s) : end]
-        return windows
+def _quantize(
+    events: list[dict],
+    bpm: float,
+    beats_per_bar: int = 4,
+) -> list[dict]:
+    """Snap every event to the nearest 16th-note grid position."""
+    grid_dur = 60.0 / bpm / 4  # 16th note in seconds
+    seen: set[tuple[float, int]] = set()
+    out: list[dict] = []
+    for ev in sorted(events, key=lambda e: e["time"]):
+        idx    = round(ev["time"] / grid_dur)
+        q_time = round(idx * grid_dur, 4)
+        key    = (q_time, ev["note"])
+        if key not in seen:
+            seen.add(key)
+            out.append({**ev, "time": q_time})
+    return out
 
-    def _classify_windows(
-        self, windows: np.ndarray
-    ) -> tuple[list[str], np.ndarray]:
-        """
-        Classify each onset window by its dominant frequency band.
 
-        Strategy
-        --------
-        1. Compute rfft for all windows simultaneously → (N, F) complex matrix.
-        2. Compute power spectrum |rfft|² → (N, F).
-        3. Sum power inside each band using pre-computed boolean masks.
-        4. argmax over the three band totals selects the instrument label.
+# ---------------------------------------------------------------------------
+# Ghost-note tagging
+# ---------------------------------------------------------------------------
 
-        Returns
-        -------
-        drum_types  : list[str] length N
-        band_powers : np.ndarray shape (N, 3)  [kick, snare, hat]
-        """
-        # Vectorized FFT over entire batch — shape: (N, window_samples//2 + 1)
-        spectra = np.fft.rfft(windows, axis=1)
-        power   = np.abs(spectra) ** 2                          # (N, F)
+def _tag_ghosts(events: list[dict]) -> list[dict]:
+    """
+    Mark snare hits whose velocity falls below the 30th percentile as ghosts.
+    """
+    snare_vels = [e["velocity"] for e in events if e["note"] == GM_SNARE]
+    if len(snare_vels) < 4:
+        return [{**e, "ghost": False} for e in events]
 
-        # Band energy sums — boolean mask indexing keeps this loop-free
-        kick_power  = power[:, self._kick_mask].sum(axis=1)     # (N,)
-        snare_power = power[:, self._snare_mask].sum(axis=1)    # (N,)
-        hat_power   = power[:, self._hat_mask].sum(axis=1)      # (N,)
+    threshold = float(np.percentile(snare_vels, 30))
+    result = []
+    for ev in events:
+        if ev["note"] == GM_SNARE and ev["velocity"] < threshold:
+            result.append({**ev, "ghost": True})
+        else:
+            result.append({**ev, "ghost": False})
+    return result
 
-        # (N, 3) → argmax gives index of dominant band per onset
-        band_powers = np.stack([kick_power, snare_power, hat_power], axis=1)
-        dominant    = np.argmax(band_powers, axis=1)             # (N,)
 
-        _labels    = ["kick", "snare", "hat"]
-        drum_types = [_labels[d] for d in dominant]
+# ---------------------------------------------------------------------------
+# MIDI export
+# ---------------------------------------------------------------------------
 
-        return drum_types, band_powers
+def _build_midi(
+    events: list[dict],
+    bpm: float,
+    beats_per_bar: int,
+    beat_unit: int,
+) -> mido.MidiFile:
+    """Build a type-0 MIDI file (percussion on channel 9)."""
+    mid   = mido.MidiFile(type=0, ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
 
-    def _detect_ghosts(
-        self, drum_types: list[str], rms: np.ndarray
-    ) -> np.ndarray:
-        """
-        Flag snare hits whose RMS energy is ≥ GHOST_THRESHOLD_DB below the
-        track's average snare peak (defined as the mean of the top quartile
-        of snare hits by energy).
+    track.append(mido.MetaMessage("set_tempo",     tempo=mido.bpm2tempo(bpm), time=0))
+    track.append(mido.MetaMessage("time_signature",
+                                  numerator=beats_per_bar,
+                                  denominator=beat_unit, time=0))
 
-        Returns
-        -------
-        is_ghost : np.ndarray, shape (N,), dtype bool
-        """
-        is_ghost = np.zeros(len(drum_types), dtype=bool)
+    tpb       = mid.ticks_per_beat
+    beat_dur  = 60.0 / bpm
+    note_dur  = int(tpb / 4)   # 16th note in ticks (for note_off)
 
-        snare_idx = np.array(
-            [i for i, t in enumerate(drum_types) if t == "snare"], dtype=int
-        )
-        if snare_idx.size < 2:
-            return is_ghost
+    # Collect (abs_tick, message) pairs
+    msgs: list[tuple[int, mido.Message]] = []
+    for ev in events:
+        abs_tick = int(ev["time"] / beat_dur * tpb)
+        vel      = min(127, max(1, int(ev["velocity"])))
+        msgs.append((abs_tick,
+                     mido.Message("note_on",  channel=9, note=ev["note"], velocity=vel,   time=0)))
+        msgs.append((abs_tick + note_dur,
+                     mido.Message("note_off", channel=9, note=ev["note"], velocity=0, time=0)))
 
-        snare_rms = rms[snare_idx]                              # subset
-        snare_db  = 20.0 * np.log10(snare_rms + 1e-8)          # (M,)
+    msgs.sort(key=lambda x: x[0])
 
-        # Reference peak: mean energy of the loudest 25 % of snare hits
-        peak_db = snare_db[snare_db >= np.percentile(snare_db, 75)].mean()
+    prev = 0
+    for abs_tick, msg in msgs:
+        msg.time = abs_tick - prev
+        track.append(msg)
+        prev = abs_tick
 
-        ghost_mask               = snare_db < (peak_db - _GHOST_THRESHOLD_DB)
-        is_ghost[snare_idx[ghost_mask]] = True
+    return mid
 
-        return is_ghost
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def transcribe(
+    file_path: str | Path,
+) -> tuple[list[dict], mido.MidiFile, dict[str, Any]]:
+    """
+    Transcribe a drum-stem WAV and return:
+
+      events   – list[dict]  {note, time, velocity, type, ghost, duration}
+      midi     – mido.MidiFile  ready to save / upload
+      metadata – dict  {bpm, time_signature, beats_per_bar, beat_unit, duration}
+    """
+    file_path = Path(file_path)
+    log.info("Transcribing %s", file_path.name)
+
+    # 1. Load audio
+    data, sr = sf.read(str(file_path), dtype="float32", always_2d=True)
+    y = data.mean(axis=1)                   # mono
+    duration = float(len(y)) / sr
+
+    # 2. BPM + beat grid
+    bpm, beat_times = _detect_bpm(y, sr)
+    log.info("BPM detected: %.1f", bpm)
+
+    # 3. Time signature
+    beats_per_bar, beat_unit = _infer_time_signature(y, sr, bpm, beat_times)
+    log.info("Time signature: %d/%d", beats_per_bar, beat_unit)
+
+    # ── 4. Split-band onset detection ──────────────────────────────────────
+
+    # ── Kick: 50–200 Hz (fundamental thud of the bass drum) ────────────────
+    y_kick = _butter_filter(y, sr, "band", [50, 200])
+    kick_times = _onset_times(y_kick, sr, delta=0.08, wait=8)
+    kick_rms   = _rms_at_times(y_kick, sr, kick_times)
+    kick_vel   = _rms_to_velocity(kick_rms, lo=50, hi=115)
+
+    # ── Snare: 200–5000 Hz (crack + overtones) ─────────────────────────────
+    # Remove kick bleed by high-passing above 200 Hz
+    y_snare = _butter_filter(y, sr, "band", [200, 5000])
+    snare_times = _onset_times(y_snare, sr, delta=0.06, wait=6)
+    # Suppress snare onsets within 30 ms of a kick (avoid kick bleed)
+    snare_times = np.array([
+        t for t in snare_times
+        if not any(abs(t - kt) < 0.03 for kt in kick_times)
+    ])
+    snare_rms = _rms_at_times(y_snare, sr, snare_times)
+    snare_vel = _rms_to_velocity(snare_rms, lo=35, hi=110)
+
+    # ── Hi-hat: 5000 Hz+ (crisp attack of closed/open hat) ─────────────────
+    y_hat = _butter_filter(y, sr, "high", 5000)
+    hat_times = _onset_times(y_hat, sr, delta=0.05, wait=3)
+    hat_rms   = _rms_at_times(y_hat, sr, hat_times)
+    hat_vel   = _rms_to_velocity(hat_rms, lo=30, hi=100)
+
+    # ── Open hi-hat heuristic: sustained energy after onset ────────────────
+    def _is_open_hh(t: float) -> bool:
+        s   = int(t * sr)
+        w1  = y_hat[s : s + int(sr * 0.05)]   # first 50 ms
+        w2  = y_hat[s + int(sr * 0.05) : s + int(sr * 0.15)]  # next 100 ms
+        if not len(w1) or not len(w2):
+            return False
+        decay = np.sqrt(np.mean(w2 ** 2)) / (np.sqrt(np.mean(w1 ** 2)) + 1e-8)
+        return float(decay) > 0.4   # still lots of energy → open
+
+    # 5. Assemble raw events
+    events: list[dict] = []
+
+    for t, v in zip(kick_times, kick_vel):
+        events.append({"note": GM_KICK, "time": round(float(t), 4),
+                        "velocity": int(v), "type": "kick",
+                        "ghost": False, "duration": 0.05})
+
+    for t, v in zip(snare_times, snare_vel):
+        events.append({"note": GM_SNARE, "time": round(float(t), 4),
+                        "velocity": int(v), "type": "snare",
+                        "ghost": False, "duration": 0.05})
+
+    for t, v in zip(hat_times, hat_vel):
+        gm = GM_HIHAT_OPEN if _is_open_hh(float(t)) else GM_HIHAT_CLOSED
+        events.append({"note": gm, "time": round(float(t), 4),
+                        "velocity": int(v), "type": GM_NAMES[gm],
+                        "ghost": False, "duration": 0.05})
+
+    log.info("Raw events — kick: %d  snare: %d  hat: %d",
+             len(kick_times), len(snare_times), len(hat_times))
+
+    # 6. Quantise to 16th-note grid
+    events = _quantize(events, bpm, beats_per_bar)
+
+    # 7. Ghost-note tagging
+    events = _tag_ghosts(events)
+
+    # 8. Build MIDI
+    midi = _build_midi(events, bpm, beats_per_bar, beat_unit)
+
+    metadata: dict[str, Any] = {
+        "bpm":            round(bpm, 1),
+        "time_signature": f"{beats_per_bar}/{beat_unit}",
+        "beats_per_bar":  beats_per_bar,
+        "beat_unit":      beat_unit,
+        "duration":       round(duration, 2),
+        "event_count":    len(events),
+    }
+
+    log.info("Transcription complete: %d events  BPM=%.1f  %d/%d",
+             len(events), bpm, beats_per_bar, beat_unit)
+
+    return events, midi, metadata
+
+
+def midi_to_bytes(midi: mido.MidiFile) -> bytes:
+    """Serialise a MidiFile to raw bytes for upload."""
+    buf = BytesIO()
+    midi.save(file=buf)
+    return buf.getvalue()

@@ -1,288 +1,297 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, Pause, RotateCcw } from 'lucide-react';
-import type { DrumEvent } from '@/hooks/useTranscription';
+import { useEffect, useRef, useState } from 'react';
+import type { DrumEvent, TrackMetadata } from '@/hooks/useTranscription';
 
 // ---------------------------------------------------------------------------
-// BPM estimation (mirrors the Python logic in music_teacher.py)
+// GM drum note → VexFlow staff position + notehead style
+// Percussion clef convention (treble staff lines: E4 G4 B4 D5 F5)
+//   Kick (36)        – F4, stem down, oval notehead
+//   Snare (38)       – C5, stem up, oval notehead
+//   HH Closed (42)   – F5, stem up, X notehead
+//   HH Open (46)     – G5, stem up, X notehead
+//   Crash (49)       – A5, stem up, X notehead
+//   Ride (51)        – E5, stem up, X notehead
+//   China (52)       – B5, stem up, X notehead
+//   Clap (39)        – C5, stem up, X notehead
 // ---------------------------------------------------------------------------
-function estimateBpm(events: DrumEvent[], maxTime = 60): number {
-  const hatTimes = events
-    .filter(e => e.time <= maxTime && e.type === 'hat')
-    .map(e => e.time)
-    .sort((a, b) => a - b);
+interface NoteSpec { key: string; noteType?: string; stemDir: -1 | 1 }
 
-  const times =
-    hatTimes.length >= 8
-      ? hatTimes
-      : events
-          .filter(e => e.time <= maxTime)
-          .map(e => e.time)
-          .sort((a, b) => a - b);
+const GM: Record<number, NoteSpec> = {
+  36: { key: 'f/4',                   stemDir: -1 },   // Kick
+  38: { key: 'c/5',                   stemDir:  1 },   // Snare
+  39: { key: 'c/5', noteType: 'x',   stemDir:  1 },   // Clap
+  42: { key: 'f/5', noteType: 'x',   stemDir:  1 },   // HH Closed
+  46: { key: 'g/5', noteType: 'x',   stemDir:  1 },   // HH Open
+  49: { key: 'a/5', noteType: 'x',   stemDir:  1 },   // Crash
+  51: { key: 'e/5', noteType: 'x',   stemDir:  1 },   // Ride
+  52: { key: 'b/5', noteType: 'x',   stemDir:  1 },   // China
+};
 
-  if (times.length < 4) return 120;
-
-  const iois: number[] = [];
-  for (let i = 1; i < times.length; i++) {
-    const d = times[i] - times[i - 1];
-    if (d >= 0.04 && d <= 1.5) iois.push(d);
-  }
-  if (!iois.length) return 120;
-
-  const counts = new Map<number, number>();
-  for (const ioi of iois) {
-    const bin = Math.round(ioi / 0.005);
-    counts.set(bin, (counts.get(bin) ?? 0) + 1);
-  }
-  let maxCnt = 0, modalBin = 0;
-  counts.forEach((cnt, bin) => { if (cnt > maxCnt) { maxCnt = cnt; modalBin = bin; } });
-
-  const modalIoi = modalBin * 0.005;
-  for (const divisor of [4, 2, 1]) {
-    const bpm = 60 / (divisor * modalIoi);
-    if (bpm >= 60 && bpm <= 240) return Math.round(bpm * 10) / 10;
-  }
-  return 120;
-}
+const NOTE_LABEL: Record<number, string> = {
+  36: 'K', 38: 'S', 39: 'Cl', 42: 'HH', 46: 'OH', 49: 'Cr', 51: 'Ri', 52: 'Ch',
+};
 
 // ---------------------------------------------------------------------------
-// Quantise events onto a 16th-note slot grid
+// Layout constants
 // ---------------------------------------------------------------------------
-function buildGrid(
+const MEASURES_PER_ROW = 4;
+const STAVE_HEIGHT     = 80;    // px between stave Y positions
+const ROW_GAP          = 40;    // extra px between rows
+const TOP_MARGIN       = 20;
+const LEFT_MARGIN      = 10;
+
+// ---------------------------------------------------------------------------
+// Helper: group events by (measure, 16th-note slot)
+// ---------------------------------------------------------------------------
+function groupEvents(
   events: DrumEvent[],
   bpm: number,
-  measures: number
-): Map<number, Set<DrumEvent['type']>> {
-  const sixteenth = 60 / (bpm * 4);
-  const totalSlots = measures * 16;
-  const grid = new Map<number, Set<DrumEvent['type']>>();
-  for (let i = 0; i < totalSlots; i++) grid.set(i, new Set());
+  beatsPerBar: number,
+): Map<number, Map<number, DrumEvent[]>> {
+  const sixteenth    = 60 / (bpm * 4);
+  const measureSlots = beatsPerBar * 4;               // 16th-note slots per bar
+  const measureDur   = sixteenth * measureSlots;
+
+  // measureIdx → slotInMeasure → events[]
+  const byMeasure = new Map<number, Map<number, DrumEvent[]>>();
 
   for (const ev of events) {
-    const slot = Math.round(ev.time / sixteenth);
-    if (slot < totalSlots) grid.get(slot)!.add(ev.type);
+    const mIdx = Math.floor(ev.time / measureDur);
+    const slot = Math.round((ev.time % measureDur) / sixteenth);
+    const safeSlot = Math.min(slot, measureSlots - 1);
+
+    if (!byMeasure.has(mIdx)) byMeasure.set(mIdx, new Map());
+    const slotMap = byMeasure.get(mIdx)!;
+    if (!slotMap.has(safeSlot)) slotMap.set(safeSlot, []);
+    slotMap.get(safeSlot)!.push(ev);
   }
-  return grid;
+  return byMeasure;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 interface DrumNotationProps {
-  events: DrumEvent[];
+  events:   DrumEvent[];
+  metadata: TrackMetadata | null;
 }
 
-interface StaveBounds {
-  noteStartX: number;
-  noteEndX: number;
-  durationSec: number;
-}
-
-const MEASURES = 2;
-
-export default function DrumNotation({ events }: DrumNotationProps) {
+export default function DrumNotation({ events, metadata }: DrumNotationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [playheadPct, setPlayheadPct] = useState<number | null>(null);
-  const [bounds, setBounds] = useState<StaveBounds | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const startTsRef = useRef<number>(0);
+  const [rendered, setRendered] = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
 
-  const bpm = estimateBpm(events);
-  const sixteenth = 60 / (bpm * 4);
-  const durationSec = MEASURES * 16 * sixteenth;
+  const bpm          = metadata?.bpm          ?? 120;
+  const beatsPerBar  = metadata?.beats_per_bar ?? 4;
+  const beatUnit     = metadata?.beat_unit     ?? 4;
+  const timeSig      = metadata?.time_signature ?? '4/4';
+  const totalSeconds = metadata?.duration      ?? 0;
 
-  // ── VexFlow render ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || !events.length) return;
-
     const container = containerRef.current;
     container.innerHTML = '';
+    setRendered(false);
+    setError(null);
 
     import('vexflow').then((VF) => {
-      const { Renderer, Stave, StaveNote, Voice, Formatter } = VF;
+      try {
+        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam } = VF;
 
-      const width = container.clientWidth || 800;
-      const height = 200;
+        // ── Measure grouping ──────────────────────────────────────────────
+        const byMeasure    = groupEvents(events, bpm, beatsPerBar);
+        const totalMeasures = Math.min((byMeasure.size || 1) + 1, 200);
+        const slotCount    = beatsPerBar * 4;   // 16th-note slots per bar
 
-      const renderer = new Renderer(container, Renderer.Backends.SVG);
-      renderer.resize(width, height);
-      const ctx = renderer.getContext();
-      ctx.setFont('Arial', 10);
+        const numRows    = Math.ceil(totalMeasures / MEASURES_PER_ROW);
+        const totalHeight = TOP_MARGIN + numRows * (STAVE_HEIGHT + ROW_GAP) + 20;
+        const width       = container.clientWidth || 900;
+        const measureW    = Math.floor((width - LEFT_MARGIN * 2) / MEASURES_PER_ROW);
 
-      const staveWidth = Math.floor((width - 20) / MEASURES);
-      const grid = buildGrid(events, bpm, MEASURES);
+        const renderer = new Renderer(container, Renderer.Backends.SVG);
+        renderer.resize(width, totalHeight);
+        const ctx = renderer.getContext();
+        ctx.setFont('Arial', 10);
 
-      let firstNoteStartX = 0;
+        for (let mIdx = 0; mIdx < totalMeasures; mIdx++) {
+          const col = mIdx % MEASURES_PER_ROW;
+          const row = Math.floor(mIdx / MEASURES_PER_ROW);
+          const sx  = LEFT_MARGIN + col * measureW;
+          const sy  = TOP_MARGIN  + row * (STAVE_HEIGHT + ROW_GAP);
 
-      for (let m = 0; m < MEASURES; m++) {
-        const sx = 10 + m * staveWidth;
-        const stave = new Stave(sx, 40, staveWidth);
-        if (m === 0) {
-          stave.addClef('percussion');
-          stave.addTimeSignature('4/4');
-        }
-        stave.setContext(ctx).draw();
+          // First measure of each row gets clef; very first also gets time sig
+          const isFirstInRow  = col === 0;
+          const staveDispW    = isFirstInRow ? measureW : measureW;
+          const stave = new Stave(sx, sy, staveDispW - 4);
 
-        const kickNotes: InstanceType<typeof StaveNote>[] = [];
-        const topNotes:  InstanceType<typeof StaveNote>[] = [];
+          if (isFirstInRow) stave.addClef('percussion');
+          if (mIdx === 0)   stave.addTimeSignature(timeSig);
+          stave.setContext(ctx).draw();
 
-        for (let slot = 0; slot < 16; slot++) {
-          const abs = m * 16 + slot;
-          const hits = grid.get(abs) ?? new Set<DrumEvent['type']>();
+          const slotMap = byMeasure.get(mIdx) ?? new Map<number, DrumEvent[]>();
 
-          // Voice 1 — kick, stems down
-          if (hits.has('kick')) {
-            kickNotes.push(
-              new StaveNote({ keys: ['f/4'], duration: '16', stemDirection: -1 })
-            );
-          } else {
-            kickNotes.push(
-              new StaveNote({ keys: ['b/4'], duration: '16r', stemDirection: -1 })
-            );
+          // Build two voices: stems-down (kick) and stems-up (everything else)
+          const kickNotes: InstanceType<typeof StaveNote>[] = [];
+          const topNotes:  InstanceType<typeof StaveNote>[] = [];
+
+          for (let s = 0; s < slotCount; s++) {
+            const slotEvs = slotMap.get(s) ?? [];
+
+            // ── Voice 2: kick ───────────────────────────────────────────
+            const kicks = slotEvs.filter(e => e.note === 36);
+            if (kicks.length) {
+              const n = new StaveNote({ keys: ['f/4'], duration: '16', stemDirection: -1 });
+              kickNotes.push(n);
+            } else {
+              kickNotes.push(new StaveNote({ keys: ['b/4'], duration: '16r', stemDirection: -1 }));
+            }
+
+            // ── Voice 1: snare + cymbals ────────────────────────────────
+            const topEvs = slotEvs.filter(e => e.note !== 36);
+            if (topEvs.length) {
+              // Deduplicate keys (same GM note at same slot → one notehead)
+              const seenKeys = new Set<string>();
+              const keys: string[] = [];
+              const noteTypes: (string | undefined)[] = [];
+              const ghosts: boolean[] = [];
+
+              for (const ev of topEvs) {
+                const spec = GM[ev.note] ?? { key: 'c/5', stemDir: 1 as 1 };
+                if (!seenKeys.has(spec.key)) {
+                  seenKeys.add(spec.key);
+                  keys.push(spec.key);
+                  noteTypes.push(spec.noteType);
+                  ghosts.push(ev.ghost ?? false);
+                }
+              }
+
+              // VexFlow StaveNote uses the first noteType for all keys
+              const hasX = noteTypes.some(t => t === 'x');
+              const noteStruct: Record<string, unknown> = {
+                keys,
+                duration:      '16',
+                stemDirection:  1,
+              };
+              if (hasX) noteStruct.noteType = 'x';
+
+              const n = new StaveNote(noteStruct as Parameters<typeof StaveNote>[0]);
+
+              // Style each notehead
+              keys.forEach((_, ki) => {
+                const ev = topEvs[ki];
+                if (!ev) return;
+                if (ev.ghost) {
+                  // Ghost notes: muted purple
+                  n.setKeyStyle(ki, { fillStyle: '#C4B5FD', strokeStyle: '#9D8FDB' });
+                } else if (ev.note === 42 || ev.note === 46) {
+                  // Hi-hat: catli purple
+                  n.setKeyStyle(ki, { fillStyle: '#7C6FCD', strokeStyle: '#7C6FCD' });
+                } else if (ev.note === 49 || ev.note === 51 || ev.note === 52) {
+                  // Cymbals: warm orange
+                  n.setKeyStyle(ki, { fillStyle: '#E89A50', strokeStyle: '#E89A50' });
+                }
+              });
+
+              topNotes.push(n);
+            } else {
+              topNotes.push(new StaveNote({ keys: ['b/4'], duration: '16r', stemDirection: 1 }));
+            }
           }
 
-          // Voice 2 — snare / ghost / hat, stems up
-          const topKeys: string[] = [];
-          if (hits.has('hat'))         topKeys.push('g/5');
-          if (hits.has('snare'))       topKeys.push('c/5');
-          if (hits.has('snare_ghost') && !hits.has('snare')) topKeys.push('c/5');
+          // Format and draw
+          try {
+            const vKick = new Voice({ numBeats: beatsPerBar, beatValue: beatUnit });
+            vKick.setStrict(false);
+            vKick.addTickables(kickNotes);
 
-          if (topKeys.length > 0) {
-            const n = new StaveNote({ keys: topKeys, duration: '16', stemDirection: 1 });
-            if (hits.has('hat')) {
-              n.setKeyStyle(0, { fillStyle: '#7C6FCD', strokeStyle: '#7C6FCD' });
-            }
-            if (hits.has('snare_ghost') && !hits.has('snare')) {
-              const ghostIdx = hits.has('hat') ? 1 : 0;
-              n.setKeyStyle(ghostIdx, { fillStyle: '#C4B5FD', strokeStyle: '#C4B5FD' });
-            }
-            topNotes.push(n);
-          } else {
-            topNotes.push(
-              new StaveNote({ keys: ['b/4'], duration: '16r', stemDirection: 1 })
-            );
+            const vTop = new Voice({ numBeats: beatsPerBar, beatValue: beatUnit });
+            vTop.setStrict(false);
+            vTop.addTickables(topNotes);
+
+            const fmtW = staveDispW - (isFirstInRow ? (mIdx === 0 ? 90 : 60) : 24);
+            new Formatter().joinVoices([vKick, vTop]).format([vKick, vTop], Math.max(fmtW, 60));
+
+            vKick.draw(ctx, stave);
+            vTop.draw(ctx, stave);
+          } catch {
+            // Skip malformed measure silently
           }
         }
 
-        const vKick = new Voice({ numBeats: 4, beatValue: 4 });
-        vKick.addTickables(kickNotes);
-
-        const vTop = new Voice({ numBeats: 4, beatValue: 4 });
-        vTop.addTickables(topNotes);
-
-        const formatWidth = staveWidth - (m === 0 ? 90 : 25);
-        new Formatter().joinVoices([vKick, vTop]).format([vKick, vTop], formatWidth);
-
-        vKick.draw(ctx, stave);
-        vTop.draw(ctx, stave);
-
-        if (m === 0) firstNoteStartX = stave.getNoteStartX();
+        setRendered(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
       }
-
-      setBounds({
-        noteStartX:  firstNoteStartX,
-        noteEndX:    10 + MEASURES * staveWidth,
-        durationSec,
-      });
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [events, bpm, beatsPerBar, beatUnit]);
 
-  // ── Playhead animation ──────────────────────────────────────────────────
-  const animate = useCallback(
-    (ts: number) => {
-      if (!bounds) return;
-      const elapsed  = (ts - startTsRef.current) / 1000;
-      const progress = Math.min(elapsed / bounds.durationSec, 1);
-      setPlayheadPct(progress * 100);
-      if (progress < 1) {
-        rafRef.current = requestAnimationFrame(animate);
-      } else {
-        setIsPlaying(false);
-        setPlayheadPct(null);
-      }
-    },
-    [bounds]
+  const ghostCount  = events.filter(e => e.ghost).length;
+  const kickCount   = events.filter(e => e.note === 36).length;
+  const snareCount  = events.filter(e => e.note === 38).length;
+  const hatCount    = events.filter(e => e.note === 42 || e.note === 46).length;
+  const cymbalCount = events.filter(e => [49, 51, 52].includes(e.note)).length;
+
+  const totalMeasures = Math.min(
+    Math.ceil(events.length > 0
+      ? (Math.max(...events.map(e => e.time)) / (60 / bpm * beatsPerBar)) + 1
+      : 1),
+    200
   );
 
-  const handlePlay = () => {
-    if (isPlaying) {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      setIsPlaying(false);
-      setPlayheadPct(null);
-      return;
-    }
-    setIsPlaying(true);
-    startTsRef.current = performance.now();
-    rafRef.current = requestAnimationFrame(animate);
-  };
-
-  const handleReset = () => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    setIsPlaying(false);
-    setPlayheadPct(null);
-  };
-
-  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
-
-  const playheadPx =
-    bounds && playheadPct !== null
-      ? bounds.noteStartX + (playheadPct / 100) * (bounds.noteEndX - bounds.noteStartX)
-      : null;
-
   return (
-    <div className="bg-white rounded-3xl border-2 border-catli-border p-6
-                    shadow-[0_8px_30px_0_rgba(196,181,253,0.25)]">
-      {/* Header row */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h3 className="font-bold text-catli-text text-sm">Drum Notation</h3>
-          <p className="text-xs text-catli-muted mt-0.5">
-            BPM &asymp;&nbsp;{bpm}&ensp;&middot;&ensp;First {MEASURES} measures&ensp;&middot;&ensp;
-            K=Kick&nbsp;S=Snare&nbsp;g=Ghost&nbsp;H=Hi-hat
-          </p>
+    <div className="bg-white rounded-3xl border-2 border-catli-border
+                    shadow-[0_8px_30px_0_rgba(196,181,253,0.25)] overflow-hidden">
+
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <div className="px-6 pt-5 pb-4 border-b border-catli-border">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="font-bold text-catli-text text-sm">Drum Score</h3>
+            <p className="text-xs text-catli-muted mt-0.5">
+              {timeSig} &middot; {bpm} BPM &middot; {totalMeasures} measures
+              &middot; {Math.round(totalSeconds)}s
+            </p>
+          </div>
+          {/* Hit type pills */}
+          <div className="flex flex-wrap gap-1.5 text-[10px]">
+            {kickCount   > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">K {kickCount}</span>}
+            {snareCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">S {snareCount}</span>}
+            {ghostCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-[#EDE8FF] text-catli-purple-dark font-mono">g {ghostCount}</span>}
+            {hatCount    > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-mono">HH {hatCount}</span>}
+            {cymbalCount > 0 && <span className="px-2 py-0.5 rounded-full bg-[#FFF3E0] text-catli-orange-dark font-mono">Cym {cymbalCount}</span>}
+          </div>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handlePlay}
-            disabled={!bounds}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-2xl text-sm font-bold
-                       bg-catli-orange hover:bg-catli-orange-hover disabled:opacity-40
-                       text-catli-text transition-all duration-150 hover:scale-105 active:scale-95
-                       shadow-[0_4px_12px_0_rgba(255,208,165,0.5)]"
-          >
-            {isPlaying ? <Pause size={13} /> : <Play size={13} />}
-            {isPlaying ? 'Pause' : 'Play'}
-          </button>
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-2xl text-sm
-                       bg-catli-purple-light hover:bg-catli-purple text-catli-purple-dark
-                       transition-all duration-150 hover:scale-105 active:scale-95"
-          >
-            <RotateCcw size={13} />
-          </button>
+
+        {/* Colour legend */}
+        <div className="flex flex-wrap gap-3 mt-2.5 text-[10px] text-catli-muted">
+          <span><span className="inline-block w-2 h-2 rounded-full bg-catli-text mr-1" />Kick/Snare</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#7C6FCD] mr-1" />Hi-hat</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#E89A50] mr-1" />Cymbal</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#C4B5FD] mr-1" />Ghost</span>
+          <span className="ml-auto">X = cymbal notehead</span>
         </div>
       </div>
 
-      {/* Notation canvas — white so VexFlow ink stays legible */}
-      <div className="relative overflow-hidden rounded-2xl bg-white border border-catli-border">
-        <div ref={containerRef} className="w-full" style={{ minHeight: 200 }} />
-
-        {/* Pastel orange playhead */}
-        {playheadPx !== null && (
+      {/* ── Score canvas (scrollable) ───────────────────────────────────── */}
+      <div className="overflow-y-auto" style={{ maxHeight: '60vh' }}>
+        {error ? (
+          <div className="p-6 text-xs text-red-600 font-mono">{error}</div>
+        ) : (
           <div
-            className="absolute top-0 bottom-0 w-0.5 pointer-events-none"
-            style={{
-              left: playheadPx,
-              background: 'linear-gradient(to bottom, #FFD0A5, #E89A50)',
-              opacity: 0.9,
-            }}
+            ref={containerRef}
+            className="w-full bg-white px-2 py-3"
+            style={{ minHeight: 200 }}
           />
         )}
       </div>
+
+      {!rendered && !error && (
+        <div className="px-6 py-3 text-xs text-catli-muted border-t border-catli-border">
+          Rendering {totalMeasures} measures…
+        </div>
+      )}
     </div>
   );
 }

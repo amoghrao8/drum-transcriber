@@ -192,7 +192,7 @@ export default function Home() {
               </span>
             </div>
 
-            <DrumNotation events={data.events} />
+            <DrumNotation events={data.events} metadata={data.metadata} />
 
             {data.exercises ? (
               <MusicTeacherLesson exercises={data.exercises} />

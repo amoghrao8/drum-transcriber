@@ -34,6 +34,7 @@ lazy-loader==0.5
 librosa==0.11.0
 llvmlite==0.43.0
 markdown-it-py==3.0.0
+mido==1.3.3
 MarkupSafe==3.0.3
 mdurl==0.1.2
 mmh3==5.2.0

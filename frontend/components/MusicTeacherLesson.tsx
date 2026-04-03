@@ -11,9 +11,12 @@ interface MusicTeacherLessonProps {
 // Per-section colour tokens (pastel palette)
 const HEADER_STYLES: Record<string, { border: string; bg: string; text: string; dot: string }> = {
   'overall':      { border: '#C4B5FD', bg: '#F3F0FF', text: '#4C3D9E', dot: '#C4B5FD' },
+  'assessment':   { border: '#C4B5FD', bg: '#F3F0FF', text: '#4C3D9E', dot: '#C4B5FD' },
+  'groove':       { border: '#86EFAC', bg: '#F0FDF4', text: '#166534', dot: '#86EFAC' },
+  'highlight':    { border: '#F9A8D4', bg: '#FDF2F8', text: '#9D174D', dot: '#F9A8D4' },
+  'practice':     { border: '#FFD0A5', bg: '#FFFBF5', text: '#92400E', dot: '#FFD0A5' },
+  'exercise':     { border: '#FFD0A5', bg: '#FFFBF5', text: '#92400E', dot: '#FFD0A5' },
   'rudiment':     { border: '#86EFAC', bg: '#F0FDF4', text: '#166534', dot: '#86EFAC' },
-  'ghost':        { border: '#F9A8D4', bg: '#FDF2F8', text: '#9D174D', dot: '#F9A8D4' },
-  'groove':       { border: '#FFD0A5', bg: '#FFFBF5', text: '#92400E', dot: '#FFD0A5' },
   'coordination': { border: '#FFD0A5', bg: '#FFFBF5', text: '#92400E', dot: '#FFD0A5' },
 };
 
