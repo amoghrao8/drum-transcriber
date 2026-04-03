@@ -2,6 +2,8 @@ import asyncio
 from functools import partial
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import torch
 import torchaudio
 from demucs.pretrained import get_model
@@ -33,8 +35,10 @@ def _run_separation(input_wav: Path, job_id: str) -> dict:
     model = _get_model()
     model.to(device)
 
-    # Load audio — explicit soundfile backend required for torchaudio >= 2.8
-    wav, sr = torchaudio.load(str(input_wav), backend="soundfile")
+    # Load audio via soundfile directly — torchaudio 2.11+ changed load()
+    # to require torchcodec, so we bypass it entirely for WAV files.
+    data, sr = sf.read(str(input_wav), dtype="float32", always_2d=True)
+    wav = torch.from_numpy(data.T)  # [channels, samples]
 
     # Resample to model's expected sample rate if needed
     if sr != model.samplerate:
@@ -63,7 +67,7 @@ def _run_separation(input_wav: Path, job_id: str) -> dict:
     drums_wav = sources[drums_idx].cpu()  # shape: [2, samples]
 
     output_path = STEMS_OUTPUT_DIR / f"{job_id}_drums.wav"
-    torchaudio.save(str(output_path), drums_wav, model.samplerate, backend="soundfile")
+    sf.write(str(output_path), drums_wav.numpy().T, model.samplerate)
 
     return {
         "job_id": job_id,
