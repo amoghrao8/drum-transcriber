@@ -12,8 +12,12 @@ Expected table schema (run once in the Supabase SQL editor):
         youtube_url text,
         event_count integer not null,
         events      jsonb  not null,
+        exercises   text,
         created_at  timestamptz not null default now()
     );
+
+To add the exercises column to an existing table:
+    ALTER TABLE drum_transcriptions ADD COLUMN exercises text;
 """
 from typing import Optional
 
@@ -42,6 +46,28 @@ async def save_transcription(
     if not response.data:
         raise RuntimeError(
             f"Supabase insert returned no data. Response: {response}"
+        )
+
+    return response.data[0]
+
+
+async def save_exercises(job_id: str, exercises: str) -> dict:
+    """
+    Update the exercises column for an existing transcription row.
+
+    Raises RuntimeError if no matching row is found or the update fails.
+    """
+    response = (
+        supabase.table("drum_transcriptions")
+        .update({"exercises": exercises})
+        .eq("job_id", job_id)
+        .execute()
+    )
+
+    if not response.data:
+        raise RuntimeError(
+            f"save_exercises: no row found for job_id '{job_id}'. "
+            "Run /api/audio/analyze first."
         )
 
     return response.data[0]

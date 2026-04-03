@@ -24,11 +24,11 @@ AUDIO_OUTPUT_DIR.mkdir(exist_ok=True)
 STEMS_OUTPUT_DIR = _BASE / "stems"
 STEMS_OUTPUT_DIR.mkdir(exist_ok=True)
 
-FFMPEG_PATH = "/opt/homebrew/bin/ffmpeg"
-YTDLP_PATH = "/opt/homebrew/bin/yt-dlp"
+FFMPEG_PATH = "ffmpeg"
+YTDLP_PATH = "yt-dlp"
 
-# Use MPS on Apple Silicon if available, fall back to CPU
+# Use CUDA on NVIDIA GPU if available, fall back to CPU
 def get_torch_device() -> torch.device:
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
     return torch.device("cpu")

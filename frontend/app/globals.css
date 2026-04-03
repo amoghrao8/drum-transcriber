@@ -1,26 +1,34 @@
 @import "tailwindcss";
 
+/* ── Cat.li pastel palette ───────────────────────────────────────────────── */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #F8F7FF;
+  --foreground: #2D2B4E;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-background:   var(--background);
+  --color-foreground:   var(--foreground);
+  --font-sans:          var(--font-geist-sans);
+  --font-mono:          var(--font-geist-mono);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Brand colours */
+  --color-catli-bg:            #F8F7FF;
+  --color-catli-card:          #FFFFFF;
+  --color-catli-purple-light:  #E0D7FF;
+  --color-catli-purple:        #C4B5FD;
+  --color-catli-purple-dark:   #7C6FCD;
+  --color-catli-orange:        #FFD0A5;
+  --color-catli-orange-hover:  #FFC085;
+  --color-catli-orange-dark:   #E89A50;
+  --color-catli-text:          #2D2B4E;
+  --color-catli-muted:         #8B87A8;
+  --color-catli-border:        #EAE6FC;
+  --color-catli-shadow:        #D8D2F8;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans, Arial, Helvetica, sans-serif);
 }

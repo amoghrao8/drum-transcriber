@@ -1,9 +1,10 @@
-# Secrets — never commit
+``````# Secrets — never commit
 .env
 .env.local
 .env.*.local
 
 # Python
+venv/
 backend/venv/
 __pycache__/
 *.pyc
@@ -15,3 +16,5 @@ backend/stems/
 # Node
 frontend/node_modules/
 frontend/.next/
+node_modules
+
