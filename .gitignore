@@ -18,3 +18,8 @@ frontend/node_modules/
 frontend/.next/
 node_modules
 
+# Logs and temp test files
+*.log
+test_*.wav
+pipeline_error.log
+
