@@ -1,4 +1,6 @@
 import os
+import shutil
+import sys
 from pathlib import Path
 
 import torch
@@ -24,8 +26,25 @@ AUDIO_OUTPUT_DIR.mkdir(exist_ok=True)
 STEMS_OUTPUT_DIR = _BASE / "stems"
 STEMS_OUTPUT_DIR.mkdir(exist_ok=True)
 
-FFMPEG_PATH = "ffmpeg"
-YTDLP_PATH = "yt-dlp"
+# ---------------------------------------------------------------------------
+# External binary resolution
+# Checks the venv's Scripts/ dir first, then falls back to PATH.
+# ---------------------------------------------------------------------------
+def _resolve_binary(name: str) -> str:
+    ext = ".exe" if sys.platform == "win32" else ""
+    venv_bin = Path(sys.executable).parent / f"{name}{ext}"
+    if venv_bin.exists():
+        return str(venv_bin)
+    on_path = shutil.which(name)
+    if on_path:
+        return on_path
+    raise RuntimeError(
+        f"Required binary '{name}' not found in venv ({venv_bin}) or system PATH. "
+        f"Install it with: pip install {name}"
+    )
+
+FFMPEG_PATH = shutil.which("ffmpeg") or "ffmpeg"
+YTDLP_PATH  = _resolve_binary("yt-dlp")
 
 # Use CUDA on NVIDIA GPU if available, fall back to CPU
 def get_torch_device() -> torch.device:
