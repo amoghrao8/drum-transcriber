@@ -29,7 +29,7 @@ const GM: Record<number, NoteSpec> = {
 };
 
 const NOTE_LABEL: Record<number, string> = {
-  36: 'K', 38: 'S', 39: 'Cl', 42: 'HH', 46: 'OH', 49: 'Cr', 51: 'Ri', 52: 'Ch',
+  36: 'K', 38: 'S', 39: 'ClSt', 42: 'HH', 46: 'OH', 49: 'Cr', 51: 'Ri', 52: 'Tr',
 };
 
 // ---------------------------------------------------------------------------
@@ -187,9 +187,18 @@ export default function DrumNotation({ events, metadata }: DrumNotationProps) {
                 } else if (ev.note === 42 || ev.note === 46) {
                   // Hi-hat: catli purple
                   n.setKeyStyle(ki, { fillStyle: '#7C6FCD', strokeStyle: '#7C6FCD' });
-                } else if (ev.note === 49 || ev.note === 51 || ev.note === 52) {
-                  // Cymbals: warm orange
+                } else if (ev.note === 49) {
+                  // Crash: warm orange
                   n.setKeyStyle(ki, { fillStyle: '#E89A50', strokeStyle: '#E89A50' });
+                } else if (ev.note === 51) {
+                  // Ride: gold
+                  n.setKeyStyle(ki, { fillStyle: '#D4A017', strokeStyle: '#D4A017' });
+                } else if (ev.note === 52) {
+                  // China / Trash Stack: red-amber
+                  n.setKeyStyle(ki, { fillStyle: '#DC2626', strokeStyle: '#DC2626' });
+                } else if (ev.note === 39) {
+                  // Clap Stack: teal
+                  n.setKeyStyle(ki, { fillStyle: '#0891B2', strokeStyle: '#0891B2' });
                 }
               });
 
@@ -230,8 +239,11 @@ export default function DrumNotation({ events, metadata }: DrumNotationProps) {
   const ghostCount  = events.filter(e => e.ghost).length;
   const kickCount   = events.filter(e => e.note === 36).length;
   const snareCount  = events.filter(e => e.note === 38).length;
+  const clapCount   = events.filter(e => e.note === 39).length;
   const hatCount    = events.filter(e => e.note === 42 || e.note === 46).length;
-  const cymbalCount = events.filter(e => [49, 51, 52].includes(e.note)).length;
+  const crashCount  = events.filter(e => e.note === 49).length;
+  const rideCount   = events.filter(e => e.note === 51).length;
+  const trashCount  = events.filter(e => e.note === 52).length;
 
   const totalMeasures = Math.min(
     Math.ceil(events.length > 0
@@ -256,11 +268,14 @@ export default function DrumNotation({ events, metadata }: DrumNotationProps) {
           </div>
           {/* Hit type pills */}
           <div className="flex flex-wrap gap-1.5 text-[10px]">
-            {kickCount   > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">K {kickCount}</span>}
-            {snareCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">S {snareCount}</span>}
-            {ghostCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-[#EDE8FF] text-catli-purple-dark font-mono">g {ghostCount}</span>}
-            {hatCount    > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-mono">HH {hatCount}</span>}
-            {cymbalCount > 0 && <span className="px-2 py-0.5 rounded-full bg-[#FFF3E0] text-catli-orange-dark font-mono">Cym {cymbalCount}</span>}
+            {kickCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">K {kickCount}</span>}
+            {snareCount > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">S {snareCount}</span>}
+            {ghostCount > 0 && <span className="px-2 py-0.5 rounded-full bg-[#EDE8FF] text-catli-purple-dark font-mono">g {ghostCount}</span>}
+            {clapCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-[#E0F2FE] text-[#0891B2] font-mono">ClSt {clapCount}</span>}
+            {hatCount   > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-mono">HH {hatCount}</span>}
+            {crashCount > 0 && <span className="px-2 py-0.5 rounded-full bg-[#FFF3E0] text-catli-orange-dark font-mono">Cr {crashCount}</span>}
+            {rideCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-[#FEF9C3] text-[#92400E] font-mono">Ri {rideCount}</span>}
+            {trashCount > 0 && <span className="px-2 py-0.5 rounded-full bg-[#FEE2E2] text-[#DC2626] font-mono">Tr {trashCount}</span>}
           </div>
         </div>
 
@@ -268,7 +283,10 @@ export default function DrumNotation({ events, metadata }: DrumNotationProps) {
         <div className="flex flex-wrap gap-3 mt-2.5 text-[10px] text-catli-muted">
           <span><span className="inline-block w-2 h-2 rounded-full bg-catli-text mr-1" />Kick/Snare</span>
           <span><span className="inline-block w-2 h-2 rounded-full bg-[#7C6FCD] mr-1" />Hi-hat</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-[#E89A50] mr-1" />Cymbal</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#E89A50] mr-1" />Crash</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#D4A017] mr-1" />Ride</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#DC2626] mr-1" />Trash</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-[#0891B2] mr-1" />Clap Stack</span>
           <span><span className="inline-block w-2 h-2 rounded-full bg-[#C4B5FD] mr-1" />Ghost</span>
           <span className="ml-auto">X = cymbal notehead</span>
         </div>
