@@ -103,11 +103,16 @@ async def _run(pipeline_id: str, youtube_url: str) -> None:
             message="Analysis complete! Your lesson is ready.",
         )
 
-    except Exception as exc:
+    except BaseException as exc:
         tb = traceback.format_exc()
         log.error("Pipeline %s failed:\n%s", pipeline_id, tb)
-        # str(exc) can be empty for some OS errors on Windows; fall back to repr
-        error_msg = str(exc).strip() or repr(exc)
+        # Write to file so errors are visible regardless of log config
+        try:
+            with open("pipeline_error.log", "a") as f:
+                f.write(f"\n=== Pipeline {pipeline_id} ===\n{tb}\n")
+        except Exception:
+            pass
+        error_msg = str(exc).strip() or repr(exc) or type(exc).__name__
         update_job(
             pipeline_id,
             status="error",
