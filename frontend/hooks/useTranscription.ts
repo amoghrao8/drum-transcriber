@@ -17,12 +17,14 @@ export interface DrumEvent {
 }
 
 export interface TrackMetadata {
-  bpm:            number;
-  time_signature: string;   // e.g. "4/4"
-  beats_per_bar:  number;
-  beat_unit:      number;
-  duration:       number;   // total seconds
-  event_count:    number;
+  bpm:               number;
+  time_signature:    string;   // e.g. "4/4"
+  beats_per_bar:     number;
+  beat_unit:         number;
+  duration:          number;   // total seconds
+  event_count:       number;
+  grid_phase?:        number;  // seconds — quantization grid origin offset from t=0
+  grid_subdivisions?: number;  // subdivisions per beat (4 = 16th notes)
 }
 
 export interface Transcription {

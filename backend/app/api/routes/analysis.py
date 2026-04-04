@@ -29,7 +29,7 @@ class AnalyzeResponse(BaseModel):
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_drums(body: AnalyzeRequest):
     """
-    Run MDX23C-DrumSep onset detection on the drums stem.
+    Run ADTOF transcription on the drums stem.
     """
     drums_wav = STEMS_OUTPUT_DIR / f"{body.job_id}_drums.wav"
     if not drums_wav.exists():

@@ -1,72 +1,26 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import type { DrumEvent, TrackMetadata } from '@/hooks/useTranscription';
 
 // ---------------------------------------------------------------------------
-// GM drum note → VexFlow staff position + notehead style
-// Percussion clef convention (treble staff lines: E4 G4 B4 D5 F5)
-//   Kick (36)        – F4, stem down, oval notehead
-//   Snare (38)       – C5, stem up, oval notehead
-//   HH Closed (42)   – F5, stem up, X notehead
-//   Tom (45)         – A4, stem down, oval notehead
-//   HH Open (46)     – G5, stem up, X notehead
-//   Crash (49)       – A5, stem up, X notehead
-//   Ride (51)        – E5, stem up, X notehead
+// Instrument rows — top to bottom, matching ADTOF repo style
 // ---------------------------------------------------------------------------
-interface NoteSpec { key: string; noteType?: string; stemDir: -1 | 1 }
-
-const GM: Record<number, NoteSpec> = {
-  36: { key: 'f/4',                   stemDir: -1 },   // Kick
-  38: { key: 'c/5',                   stemDir:  1 },   // Snare
-  42: { key: 'f/5', noteType: 'x',   stemDir:  1 },   // HH Closed
-  45: { key: 'a/4',                   stemDir: -1 },   // Tom (stem-down, oval)
-  46: { key: 'g/5', noteType: 'x',   stemDir:  1 },   // HH Open
-  49: { key: 'a/5', noteType: 'x',   stemDir:  1 },   // Crash
-  51: { key: 'e/5', noteType: 'x',   stemDir:  1 },   // Ride
-};
-
-const NOTE_LABEL: Record<number, string> = {
-  36: 'K', 38: 'S', 42: 'HH', 45: 'T', 46: 'OH', 49: 'Cr', 51: 'Ri',
-};
+const ROWS = [
+  { label: 'CY+RD', notes: new Set([49, 51]),     symbol: 'star', color: '#E89A50' },
+  { label: 'HH',    notes: new Set([42, 46]),     symbol: 'x',    color: '#7C6FCD' },
+  { label: 'TT',    notes: new Set([45, 47, 48]), symbol: 'dot',  color: '#16A34A' },
+  { label: 'SD',    notes: new Set([38, 40]),     symbol: 'dot',  color: '#374151' },
+  { label: 'BD',    notes: new Set([35, 36]),     symbol: 'dot',  color: '#1D4ED8' },
+] as const;
 
 // ---------------------------------------------------------------------------
-// Layout constants
+// Layout
 // ---------------------------------------------------------------------------
-const MEASURES_PER_ROW = 2;   // 2 per row for 32nd-note grid (was 4)
-const STAVE_HEIGHT     = 80;    // px between stave Y positions
-const ROW_GAP          = 40;    // extra px between rows
-const TOP_MARGIN       = 20;
-const LEFT_MARGIN      = 10;
-
-// ---------------------------------------------------------------------------
-// Helper: group events by (measure, 32nd-note slot)
-// ---------------------------------------------------------------------------
-function groupEvents(
-  events:       DrumEvent[],
-  bpm:          number,
-  beatsPerBar:  number,
-  subdivisions: number = 8,    // 8 = 32nd-note grid, 4 = 16th-note grid
-): Map<number, Map<number, DrumEvent[]>> {
-  const gridUnit     = 60 / (bpm * subdivisions);
-  const measureSlots = beatsPerBar * subdivisions;
-  const measureDur   = gridUnit * measureSlots;
-
-  // measureIdx → slotInMeasure → events[]
-  const byMeasure = new Map<number, Map<number, DrumEvent[]>>();
-
-  for (const ev of events) {
-    const mIdx = Math.floor(ev.time / measureDur);
-    const slot = Math.round((ev.time % measureDur) / gridUnit);
-    const safeSlot = Math.min(slot, measureSlots - 1);
-
-    if (!byMeasure.has(mIdx)) byMeasure.set(mIdx, new Map());
-    const slotMap = byMeasure.get(mIdx)!;
-    if (!slotMap.has(safeSlot)) slotMap.set(safeSlot, []);
-    slotMap.get(safeSlot)!.push(ev);
-  }
-  return byMeasure;
-}
+const ROW_H      = 36;   // px per instrument lane
+const LABEL_W    = 54;   // px reserved for row labels on the left
+const TOP_PAD    = 8;
+const BOTTOM_PAD = 28;   // space for time axis
+const PX_PER_SEC = 80;   // horizontal scale
 
 // ---------------------------------------------------------------------------
 // Component
@@ -77,236 +31,150 @@ interface DrumNotationProps {
 }
 
 export default function DrumNotation({ events, metadata }: DrumNotationProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [rendered, setRendered] = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
+  const totalDuration = metadata?.duration
+    ?? (events.length ? Math.max(...events.map(e => e.time)) + 2 : 60);
+  const bpm     = metadata?.bpm           ?? 120;
+  const timeSig = metadata?.time_signature ?? '4/4';
 
-  const bpm          = metadata?.bpm          ?? 120;
-  const beatsPerBar  = metadata?.beats_per_bar ?? 4;
-  const beatUnit     = metadata?.beat_unit     ?? 4;
-  const timeSig      = metadata?.time_signature ?? '4/4';
-  const totalSeconds = metadata?.duration      ?? 0;
+  const svgW = Math.ceil(totalDuration * PX_PER_SEC) + LABEL_W;
+  const svgH = ROWS.length * ROW_H + TOP_PAD + BOTTOM_PAD;
 
-  useEffect(() => {
-    if (!containerRef.current || !events.length) return;
-    const container = containerRef.current;
-    container.innerHTML = '';
-    setRendered(false);
-    setError(null);
+  // note → row index lookup
+  const noteToRow = new Map<number, number>();
+  ROWS.forEach((row, i) => row.notes.forEach(n => noteToRow.set(n, i)));
 
-    import('vexflow').then((VF) => {
-      try {
-        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam } = VF;
-
-        // ── Measure grouping ──────────────────────────────────────────────
-        const subdivisions  = 4;   // 16th-note grid (matches backend quantization)
-        const byMeasure     = groupEvents(events, bpm, beatsPerBar, subdivisions);
-        const totalMeasures = Math.min((byMeasure.size || 1) + 1, 200);
-        const slotCount     = beatsPerBar * subdivisions;   // 32 slots per bar in 4/4
-
-        const numRows    = Math.ceil(totalMeasures / MEASURES_PER_ROW);
-        const totalHeight = TOP_MARGIN + numRows * (STAVE_HEIGHT + ROW_GAP) + 20;
-        const width       = container.clientWidth || 900;
-        const measureW    = Math.floor((width - LEFT_MARGIN * 2) / MEASURES_PER_ROW);
-
-        const renderer = new Renderer(container, Renderer.Backends.SVG);
-        renderer.resize(width, totalHeight);
-        const ctx = renderer.getContext();
-        ctx.setFont('Arial', 10);
-
-        for (let mIdx = 0; mIdx < totalMeasures; mIdx++) {
-          const col = mIdx % MEASURES_PER_ROW;
-          const row = Math.floor(mIdx / MEASURES_PER_ROW);
-          const sx  = LEFT_MARGIN + col * measureW;
-          const sy  = TOP_MARGIN  + row * (STAVE_HEIGHT + ROW_GAP);
-
-          // First measure of each row gets clef; very first also gets time sig
-          const isFirstInRow  = col === 0;
-          const staveDispW    = isFirstInRow ? measureW : measureW;
-          const stave = new Stave(sx, sy, staveDispW - 4);
-
-          if (isFirstInRow) stave.addClef('percussion');
-          if (mIdx === 0)   stave.addTimeSignature(timeSig);
-          stave.setContext(ctx).draw();
-
-          const slotMap = byMeasure.get(mIdx) ?? new Map<number, DrumEvent[]>();
-
-          // Build two voices: stems-down (kick) and stems-up (everything else)
-          const kickNotes: InstanceType<typeof StaveNote>[] = [];
-          const topNotes:  InstanceType<typeof StaveNote>[] = [];
-
-          for (let s = 0; s < slotCount; s++) {
-            const slotEvs = slotMap.get(s) ?? [];
-
-            // ── Voice 2: kick + toms (stem-down) ───────────────────────
-            const lowEvs = slotEvs.filter(e => e.note === 36 || e.note === 45);
-            if (lowEvs.length) {
-              // Collect unique staff positions for kick/tom combination
-              const lowKeys = [...new Set(lowEvs.map(e => GM[e.note]?.key ?? 'f/4'))];
-              const n = new StaveNote({ keys: lowKeys, duration: '32', stemDirection: -1 });
-              // Colour toms green
-              lowKeys.forEach((_, ki) => {
-                if (lowEvs[ki]?.note === 45)
-                  n.setKeyStyle(ki, { fillStyle: '#16A34A', strokeStyle: '#16A34A' });
-              });
-              kickNotes.push(n);
-            } else {
-              kickNotes.push(new StaveNote({ keys: ['b/4'], duration: '32r', stemDirection: -1 }));
-            }
-
-            // ── Voice 1: snare + cymbals (stem-up) ─────────────────────
-            const topEvs = slotEvs.filter(e => e.note !== 36 && e.note !== 45);
-            if (topEvs.length) {
-              // Deduplicate keys (same GM note at same slot → one notehead)
-              const seenKeys = new Set<string>();
-              const keys: string[] = [];
-              const noteTypes: (string | undefined)[] = [];
-              const ghosts: boolean[] = [];
-
-              for (const ev of topEvs) {
-                const spec = GM[ev.note] ?? { key: 'c/5', stemDir: 1 as 1 };
-                if (!seenKeys.has(spec.key)) {
-                  seenKeys.add(spec.key);
-                  keys.push(spec.key);
-                  noteTypes.push(spec.noteType);
-                  ghosts.push(ev.ghost ?? false);
-                }
-              }
-
-              // VexFlow StaveNote uses the first noteType for all keys
-              const hasX = noteTypes.some(t => t === 'x');
-              const noteStruct: Record<string, unknown> = {
-                keys,
-                duration:      '32',
-                stemDirection:  1,
-              };
-              if (hasX) noteStruct.noteType = 'x';
-
-              const n = new StaveNote(noteStruct as Parameters<typeof StaveNote>[0]);
-
-              // Style each notehead
-              keys.forEach((_, ki) => {
-                const ev = topEvs[ki];
-                if (!ev) return;
-                if (ev.ghost) {
-                  n.setKeyStyle(ki, { fillStyle: '#C4B5FD', strokeStyle: '#9D8FDB' });
-                } else if (ev.note === 42) {
-                  // Hi-hat: catli purple
-                  n.setKeyStyle(ki, { fillStyle: '#7C6FCD', strokeStyle: '#7C6FCD' });
-                } else if (ev.note === 49) {
-                  // Crash: warm orange
-                  n.setKeyStyle(ki, { fillStyle: '#E89A50', strokeStyle: '#E89A50' });
-                } else if (ev.note === 51) {
-                  // Ride: teal
-                  n.setKeyStyle(ki, { fillStyle: '#0D9488', strokeStyle: '#0D9488' });
-                }
-              });
-
-              topNotes.push(n);
-            } else {
-              topNotes.push(new StaveNote({ keys: ['b/4'], duration: '32r', stemDirection: 1 }));
-            }
-          }
-
-          // Format and draw
-          try {
-            const vKick = new Voice({ numBeats: beatsPerBar, beatValue: beatUnit });
-            vKick.setStrict(false);
-            vKick.addTickables(kickNotes);
-
-            const vTop = new Voice({ numBeats: beatsPerBar, beatValue: beatUnit });
-            vTop.setStrict(false);
-            vTop.addTickables(topNotes);
-
-            const fmtW = staveDispW - (isFirstInRow ? (mIdx === 0 ? 90 : 60) : 24);
-            new Formatter().joinVoices([vKick, vTop]).format([vKick, vTop], Math.max(fmtW, 60));
-
-            vKick.draw(ctx, stave);
-            vTop.draw(ctx, stave);
-          } catch {
-            // Skip malformed measure silently
-          }
-        }
-
-        setRendered(true);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, bpm, beatsPerBar, beatUnit]);
-
-  const ghostCount  = events.filter(e => e.ghost).length;
-  const kickCount   = events.filter(e => e.note === 36).length;
-  const snareCount  = events.filter(e => e.note === 38).length;
-  const hatCount    = events.filter(e => e.note === 42).length;
-  const tomCount    = events.filter(e => e.note === 45).length;
-  const crashCount  = events.filter(e => e.note === 49).length;
-  const rideCount   = events.filter(e => e.note === 51).length;
-
-  const totalMeasures = Math.min(
-    Math.ceil(events.length > 0
-      ? (Math.max(...events.map(e => e.time)) / (60 / bpm * beatsPerBar)) + 1
-      : 1),
-    200
-  );
+  // Time axis ticks
+  const tickStep = totalDuration > 120 ? 5 : 1;
+  const ticks: number[] = [];
+  for (let t = 0; t <= totalDuration + tickStep / 2; t += tickStep) ticks.push(t);
 
   return (
     <div className="bg-white rounded-3xl border-2 border-catli-border
                     shadow-[0_8px_30px_0_rgba(196,181,253,0.25)] overflow-hidden">
 
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div className="px-6 pt-5 pb-4 border-b border-catli-border">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="font-bold text-catli-text text-sm">Drum Score</h3>
-            <p className="text-xs text-catli-muted mt-0.5">
-              {timeSig} &middot; {bpm} BPM &middot; {totalMeasures} measures
-              &middot; {Math.round(totalSeconds)}s
-            </p>
-          </div>
-          {/* Hit type pills */}
-          <div className="flex flex-wrap gap-1.5 text-[10px]">
-            {kickCount   > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">K {kickCount}</span>}
-            {snareCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-bg text-catli-text font-mono">S {snareCount}</span>}
-            {ghostCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-[#EDE8FF] text-catli-purple-dark font-mono">g {ghostCount}</span>}
-            {tomCount    > 0 && <span className="px-2 py-0.5 rounded-full bg-[#DCFCE7] text-[#16A34A] font-mono">T {tomCount}</span>}
-            {hatCount    > 0 && <span className="px-2 py-0.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-mono">HH {hatCount}</span>}
-            {crashCount  > 0 && <span className="px-2 py-0.5 rounded-full bg-[#FFF3E0] text-catli-orange-dark font-mono">Cr {crashCount}</span>}
-            {rideCount   > 0 && <span className="px-2 py-0.5 rounded-full bg-[#CCFBF1] text-[#0D9488] font-mono">Ri {rideCount}</span>}
-          </div>
-        </div>
-
-        {/* Colour legend */}
-        <div className="flex flex-wrap gap-3 mt-2.5 text-[10px] text-catli-muted">
-          <span><span className="inline-block w-2 h-2 rounded-full bg-catli-text mr-1" />Kick/Snare</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] mr-1" />Tom</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-[#7C6FCD] mr-1" />Hi-hat</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-[#E89A50] mr-1" />Crash</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-[#0D9488] mr-1" />Ride</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-[#C4B5FD] mr-1" />Ghost</span>
-          <span className="ml-auto">X = cymbal notehead</span>
-        </div>
+      {/* Header */}
+      <div className="px-6 pt-5 pb-3 border-b border-catli-border">
+        <h3 className="font-bold text-catli-text text-sm">Drum Transcription</h3>
+        <p className="text-xs text-catli-muted mt-0.5">
+          {timeSig} &middot; {bpm} BPM &middot; {Math.round(totalDuration)}s
+          &middot; {events.length} events
+        </p>
       </div>
 
-      {/* ── Score canvas (scrollable) ───────────────────────────────────── */}
-      <div className="overflow-y-auto" style={{ maxHeight: '60vh' }}>
-        {error ? (
-          <div className="p-6 text-xs text-red-600 font-mono">{error}</div>
-        ) : (
-          <div
-            ref={containerRef}
-            className="w-full bg-white px-2 py-3"
-            style={{ minHeight: 200 }}
-          />
-        )}
+      {/* Scrollable plot */}
+      <div className="overflow-x-auto">
+        <svg
+          width={svgW}
+          height={svgH}
+          style={{ display: 'block', fontFamily: 'monospace' }}
+        >
+          {/* Row bands + labels */}
+          {ROWS.map((row, i) => {
+            const y = TOP_PAD + i * ROW_H;
+            return (
+              <g key={row.label}>
+                <rect
+                  x={0} y={y} width={svgW} height={ROW_H}
+                  fill={i % 2 === 0 ? '#FAFAFA' : '#FFFFFF'}
+                />
+                <line
+                  x1={LABEL_W} y1={y + ROW_H}
+                  x2={svgW}    y2={y + ROW_H}
+                  stroke="#E5E7EB" strokeWidth={0.5}
+                />
+                <text
+                  x={LABEL_W - 6} y={y + ROW_H / 2 + 4}
+                  textAnchor="end" fontSize={10} fill="#6B7280"
+                >
+                  {row.label}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Vertical time grid + axis */}
+          {ticks.map(t => {
+            const x = LABEL_W + t * PX_PER_SEC;
+            return (
+              <g key={t}>
+                <line
+                  x1={x} y1={TOP_PAD}
+                  x2={x} y2={TOP_PAD + ROWS.length * ROW_H}
+                  stroke="#E5E7EB" strokeWidth={0.5} strokeDasharray="2,4"
+                />
+                <line
+                  x1={x} y1={TOP_PAD + ROWS.length * ROW_H}
+                  x2={x} y2={TOP_PAD + ROWS.length * ROW_H + 5}
+                  stroke="#9CA3AF" strokeWidth={1}
+                />
+                <text
+                  x={x} y={TOP_PAD + ROWS.length * ROW_H + 18}
+                  textAnchor="middle" fontSize={9} fill="#6B7280"
+                >
+                  {t.toFixed(0)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Events */}
+          {events.map((ev, idx) => {
+            const rowIdx = noteToRow.get(ev.note);
+            if (rowIdx === undefined) return null;
+
+            const row = ROWS[rowIdx];
+            const cx  = LABEL_W + ev.time * PX_PER_SEC;
+            const cy  = TOP_PAD + rowIdx * ROW_H + ROW_H / 2;
+
+            if (row.symbol === 'x') {
+              const s = 4.5;
+              return (
+                <g key={idx}>
+                  <line x1={cx - s} y1={cy - s} x2={cx + s} y2={cy + s}
+                    stroke={row.color} strokeWidth={1.5} />
+                  <line x1={cx + s} y1={cy - s} x2={cx - s} y2={cy + s}
+                    stroke={row.color} strokeWidth={1.5} />
+                </g>
+              );
+            }
+
+            if (row.symbol === 'star') {
+              const s = 5;
+              // 5-point star as a polygon
+              const pts = Array.from({ length: 5 }, (_, k) => {
+                const outer = ((k * 72 - 90) * Math.PI) / 180;
+                const inner = ((k * 72 - 90 + 36) * Math.PI) / 180;
+                return [
+                  `${cx + s * Math.cos(outer)},${cy + s * Math.sin(outer)}`,
+                  `${cx + (s * 0.4) * Math.cos(inner)},${cy + (s * 0.4) * Math.sin(inner)}`,
+                ].join(' ');
+              }).join(' ');
+              return (
+                <polygon key={idx} points={pts} fill={row.color} />
+              );
+            }
+
+            // dot
+            const r = ev.ghost ? 3 : 4.5;
+            return (
+              <circle key={idx} cx={cx} cy={cy} r={r}
+                fill={ev.ghost ? '#C4B5FD' : row.color}
+                opacity={ev.ghost ? 0.6 : 1}
+              />
+            );
+          })}
+        </svg>
       </div>
 
-      {!rendered && !error && (
-        <div className="px-6 py-3 text-xs text-catli-muted border-t border-catli-border">
-          Rendering {totalMeasures} measures…
-        </div>
-      )}
+      {/* Legend */}
+      <div className="px-6 py-2 border-t border-catli-border flex flex-wrap gap-4 text-[10px] text-catli-muted">
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#1D4ED8] mr-1" />BD</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#374151] mr-1" />SD</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] mr-1" />TT</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#7C6FCD] mr-1" />HH</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#E89A50] mr-1" />CY+RD</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#C4B5FD] mr-1" />ghost</span>
+      </div>
     </div>
   );
 }

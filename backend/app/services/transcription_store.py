@@ -38,8 +38,9 @@ async def save_transcription(
     metadata: Optional[dict[str, Any]] = None,
 ) -> dict:
     """
-    Insert a transcription record and return the created row.
-    Raises RuntimeError if the insert fails.
+    Upsert a transcription record keyed on job_id.
+    If a row with this job_id already exists it is updated in place,
+    preventing duplicate rows for the same pipeline run.
     """
     payload: dict[str, Any] = {
         "job_id":      job_id,
@@ -50,13 +51,27 @@ async def save_transcription(
     if metadata:
         payload["metadata"] = metadata
 
-    response = supabase.table("drum_transcriptions").insert(payload).execute()
+    # Try UPDATE first (row already exists for this job_id)
+    update_resp = (
+        supabase.table("drum_transcriptions")
+        .update(payload)
+        .eq("job_id", job_id)
+        .execute()
+    )
+    if update_resp.data:
+        return update_resp.data[0]
 
-    if not response.data:
+    # No existing row — INSERT
+    insert_resp = (
+        supabase.table("drum_transcriptions")
+        .insert(payload)
+        .execute()
+    )
+    if not insert_resp.data:
         raise RuntimeError(
-            f"Supabase insert returned no data. Response: {response}"
+            f"Supabase insert returned no data. Response: {insert_resp}"
         )
-    return response.data[0]
+    return insert_resp.data[0]
 
 
 async def save_exercises(job_id: str, exercises: str) -> dict:
