@@ -23,3 +23,9 @@ node_modules
 test_*.wav
 pipeline_error.log
 
+# Model weights and external repos — too large for git
+pretrained_mdx23c_models/
+pretrained_larsnet_models/
+zftturbo_mss/
+aufr33-jarredou_DrumSep_config.yaml
+

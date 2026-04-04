@@ -42,11 +42,12 @@ CLASS_NOTES  = [36, 38, 42, 46, 51, 49, 52, 39]
 # ---------------------------------------------------------------------------
 
 N_MELS          = 64
-N_FFT           = 1024
-HOP_LEN         = 128       # ≈ 3 ms at 44100 Hz
+N_FFT           = 512       # shorter window → better time resolution (was 1024)
+HOP_LEN         = 441       # 10 ms at 44100 Hz (was 128 ≈ 2.9 ms)
 WINDOW_SR       = 44100
-WINDOW_MS       = 100
-WINDOW_SAMPLES  = int(WINDOW_SR * WINDOW_MS / 1000)   # 4410 samples
+WINDOW_MS       = 40        # 40 ms centered window (was 100 ms)
+WINDOW_SAMPLES  = int(WINDOW_SR * WINDOW_MS / 1000)   # 1764 samples
+WINDOW_HALF     = WINDOW_SAMPLES // 2                  # 882 samples = 20 ms
 
 _WEIGHTS_PATH   = Path(__file__).parent / "drum_classifier_weights.pth"
 
@@ -56,7 +57,7 @@ _WEIGHTS_PATH   = Path(__file__).parent / "drum_classifier_weights.pth"
 
 class DrumCNN(nn.Module):
     """
-    Lightweight CNN for 100 ms drum hit windows.
+    Lightweight CNN for 40 ms drum hit windows.
 
     Input  : (B, 1, N_MELS, T)  — log-power Mel-spectrogram
     Output : (B, NUM_CLASSES)   — raw logits
@@ -141,7 +142,7 @@ class _Features(NamedTuple):
     e_vhi:    float   # 14000+ Hz   — china / crash top-end
     centroid: float   # spectral centroid (Hz)
     flatness: float   # spectral flatness (0 = tonal, 1 = noisy)
-    decay:    float   # energy[50ms:100ms] / energy[0ms:50ms]
+    decay:    float   # energy[20ms:40ms] / energy[0ms:20ms]  (post-onset window, 0ms = onset)
     rms:      float   # total window RMS
 
 
@@ -217,16 +218,66 @@ class SpectralDrumClassifier:
         """
         return self._rules_cymbal(compute_features(window, sr))
 
+    def classify_cymbal_hybrid(
+        self,
+        window_band: np.ndarray,      # 5kHz+ filtered, 40ms — for spectral features
+        window_full: np.ndarray,      # full mix, 40ms — for crash mid-energy
+        window_band_long: np.ndarray, # 5kHz+ filtered, 150ms — for open/closed decay
+        sr: int = WINDOW_SR,
+    ) -> int:
+        """
+        Hybrid classifier:
+          - 40ms band window  → spectral features (centroid, flatness, bands)
+          - 40ms full window  → crash detection (needs mid-band plate resonance)
+          - 150ms band window → open/closed decay (40ms is too short; closed HH
+            ring at 10kHz+ lasts ~80ms, open HH lasts 200-400ms)
+
+        Open/closed decay threshold uses energy[75ms:150ms] / energy[0ms:75ms].
+        Closed HH: ring mostly gone by 75ms → decay ≈ 0.05-0.25
+        Open HH:   ring still strong at 75ms → decay ≈ 0.30-0.75
+        """
+        f_band = compute_features(window_band, sr)
+        f_full = compute_features(window_full, sr)
+
+        # ── Long-window decay for open/closed distinction ─────────────────────
+        mid_long = max(len(window_band_long) // 2, 1)
+        e_first  = float(np.mean(window_band_long[:mid_long] ** 2)) + 1e-12
+        e_second = float(np.mean(window_band_long[mid_long:] ** 2)) + 1e-12
+        long_decay = e_second / e_first
+
+        # ── Crash: full-signal mid+high simultaneously + sustained long decay ─
+        mid_full = f_full.e_lo_mid + f_full.e_mid
+        hi_full  = f_full.e_hi + f_full.e_vhi
+        if mid_full > 0.12 and hi_full > 0.20 and long_decay > 0.30:
+            return 5  # crash
+
+        # ── China / Trash: very-high-freq + noisy in band signal ──────────────
+        if f_band.e_vhi > 0.18 and f_band.flatness > 0.65:
+            return 6  # china
+
+        # ── Ride: extremely tonal bell (flatness < 0.12 — near-pure harmonic series)
+        # True ride bell has flatness 0.05-0.12 in the 5kHz+ filtered signal.
+        # Any hi-hat, even with cymbal resonance, has flatness > 0.15.
+        if f_band.flatness < 0.12 and 6500 < f_band.centroid < 8500 and long_decay < 0.25:
+            return 4  # ride
+
+        # ── Open hi-hat: ring still present at 75-150ms ───────────────────────
+        if long_decay > 0.25:
+            return 3  # hihat_open
+
+        return 2  # hihat_closed
+
     # ── Snare / clap discriminator ───────────────────────────────────────────
 
     def classify_snare(self, window: np.ndarray, sr: int = WINDOW_SR) -> int:
         """
         Returns 1 (snare) or 7 (clap/stack).
-        Clap stacks have less sub-bass and a very fast decay.
+        Clap stacks: no low-end, no snare wire rattle (e_lo_mid), extremely fast decay.
+        Snare: wire rattle always produces e_lo_mid ~0.15-0.35, even on ghost hits.
         """
         f = compute_features(window, sr)
-        if (f.e_sub + f.e_bass) < 0.10 and f.decay < 0.25:
-            return 7  # clap
+        if (f.e_sub + f.e_bass) < 0.08 and f.e_lo_mid < 0.12 and f.decay < 0.15:
+            return 7  # clap/stack
         return 1       # snare
 
     # ── Decision rules ───────────────────────────────────────────────────────
@@ -247,7 +298,7 @@ class SpectralDrumClassifier:
 
         # ── Snare / clap ──────────────────────────────────────────────────────
         if snare_ratio > 0.30:
-            if (f.e_sub + f.e_bass) < 0.10 and f.decay < 0.25:
+            if (f.e_sub + f.e_bass) < 0.08 and f.e_lo_mid < 0.12 and f.decay < 0.15:
                 return 7   # clap
             return 1        # snare
 
@@ -265,34 +316,44 @@ class SpectralDrumClassifier:
         """
         Cymbal sub-classification.
 
-        Key insight: crashes differ from hi-hats because a crash generates
-        significant energy in the 400-4000 Hz range (physical plate resonance),
-        while a hi-hat is almost purely high-frequency.  The product
-        snare_spread * cymbal_ratio captures this — large only when both
-        mid AND high bands are simultaneously active.
+        Rule ordering: crash first (requires mid+hi simultaneously), then china,
+        then ride (strict flatness gate excludes hi-hats), then open/closed hi-hat.
+
+        Key thresholds:
+          Crash: mid_energy > 0.12 — plate resonance from a crash cymbal generates
+                 real 400-4000 Hz energy; hi-hats have only bleed (~0.05-0.09).
+          Ride:  flatness < 0.40 — ride bell is tonal (0.20-0.38); hi-hats are
+                 metallic noise (0.55-0.75). Previous threshold 0.60 overlapped.
+          Ride:  centroid 6000-9500 Hz — ride bell ring peak; hi-hats peak at
+                 10000-13000 Hz. Previous 5000-11000 Hz range captured both.
         """
-        snare_spread = f.e_lo_mid + f.e_mid      # mid-freq energy
-        cymbal_top   = f.e_hi_mid + f.e_hi + f.e_vhi
+        mid_energy = f.e_lo_mid + f.e_mid    # 400-4000 Hz plate resonance
+        hi_energy  = f.e_hi + f.e_vhi        # 8000 Hz+ shimmer
 
-        crash_score  = snare_spread * cymbal_top  # large ↔ crash-like
-
-        # ── Crash: energetic mid spread AND high content, slow decay ─────────
-        if crash_score > 0.04 and f.decay > 0.25:
+        # ── Crash: wide bandwidth + sustained ring in 20-40ms range ──────────
+        # Crash has energy BOTH in mid (plate resonance) AND high (shimmer),
+        # and still rings clearly at 20-40ms. Hi-hats have very little mid energy.
+        if mid_energy > 0.12 and hi_energy > 0.20 and f.decay > 0.25:
             return 5  # crash
 
-        # ── China / Trash Stack: very-high-freq dominant + noisy ─────────────
+        # ── China / Trash Stack: extreme very-high-freq + maximum noise ───────
         if f.e_vhi > 0.18 and f.flatness > 0.65:
             return 6  # china
 
-        # ── Ride: tonal (low flatness), centroid in bell region 5–11 kHz ─────
-        if f.flatness < 0.60 and 5000 < f.centroid < 11000:
+        # ── Ride: tonal bell in tight centroid band, NOT sustained like open HH ─
+        # Ride bell: flatness 0.15-0.32, centroid 6500-8500 Hz, decay 0.20-0.45
+        # Open HH:   flatness 0.50-0.75, centroid 9000-13000 Hz, decay > 0.45
+        if f.flatness < 0.32 and 6500 < f.centroid < 8500 and f.decay < 0.50:
             return 4  # ride
 
-        # ── Open hi-hat: sustained (energy still present at 50-100 ms) ───────
+        # ── Open hi-hat: ring still clearly present at 20-40ms ───────────────
+        # Window is 0-40ms from onset. Decay = energy[20:40ms] / energy[0:20ms].
+        # Closed HH: energy drops fast, decay 0.10-0.35.
+        # Open HH: still ringing at 20ms, decay 0.40-0.75.
         if f.decay > 0.40:
             return 3  # hihat_open
 
-        return 2  # hihat_closed
+        return 2  # hihat_closed — fast decay, high flatness, high centroid
 
 # ---------------------------------------------------------------------------
 # Factory — try CNN weights, fall back to heuristic
