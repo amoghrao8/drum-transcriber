@@ -4,7 +4,7 @@ Music Teacher route.
 POST /api/audio/teach
     - Fetches the stored transcription for a job_id from Supabase
     - Builds a 16th-note grid from the events
-    - Sends the grid to local Ollama (llama4:14b) for lesson generation
+    - Sends the grid to local Ollama (qwen2.5:14b) for lesson generation
     - Saves the lesson back to drum_transcriptions.exercises
     - Returns the Markdown lesson
 """
@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core.supabase_client import supabase
-from app.services.music_teacher import summarize_transcription, generate_lesson
+from app.services.music_teacher import build_semantic_log, generate_lesson
 from app.services.transcription_store import save_exercises
 
 router = APIRouter(prefix="/audio", tags=["music-teacher"])
@@ -43,7 +43,7 @@ async def teach(body: TeachRequest):
     # 1. Fetch transcription row from Supabase
     result = (
         supabase.table("drum_transcriptions")
-        .select("job_id, events")
+        .select("job_id, events, metadata")
         .eq("job_id", body.job_id)
         .limit(1)
         .execute()
@@ -55,13 +55,14 @@ async def teach(body: TeachRequest):
                    "Run /api/audio/analyze first.",
         )
 
-    row = result.data[0]
-    events: list[dict] = row["events"]
+    row      = result.data[0]
+    events:   list[dict] = row["events"]
+    metadata: dict       = row.get("metadata") or {}
 
-    # 2. Build 16th-note grid (CPU-bound but fast; run in thread for safety)
+    # 2. Build 16th-note grid using stored BPM/time-sig metadata
     loop = asyncio.get_event_loop()
     grid: str = await loop.run_in_executor(
-        None, partial(summarize_transcription, events, 60.0)
+        None, partial(build_semantic_log, events, metadata)
     )
 
     # 3. Generate lesson via Ollama (network I/O, can be slow)

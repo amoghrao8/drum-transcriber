@@ -75,6 +75,7 @@ def build_semantic_log(
     beat_dur       = 60.0 / bpm
     measure_dur    = beat_dur * beats_per_bar
     sixteenth_dur  = beat_dur / 4
+    grid_phase     = float(metadata.get("grid_phase", 0.0))
 
     header = (
         f"BPM: {bpm} | Time Signature: {time_sig} | "
@@ -82,12 +83,16 @@ def build_semantic_log(
     )
 
     # Group events by (measure_idx, sixteenth_slot_in_measure)
+    # Subtract grid_phase so measure 1 aligns with the actual beat grid origin
     grid: dict[tuple[int, int], list[dict]] = {}
     for ev in sorted(events, key=lambda e: e["time"]):
-        m_idx  = int(ev["time"] / measure_dur)
+        t     = ev["time"] - grid_phase
+        if t < 0:
+            t = 0.0
+        m_idx = int(t / measure_dur)
         if m_idx >= max_measures:
             continue
-        slot_in_m = round((ev["time"] % measure_dur) / sixteenth_dur)
+        slot_in_m = round((t % measure_dur) / sixteenth_dur)
         key = (m_idx, slot_in_m)
         grid.setdefault(key, []).append(ev)
 
