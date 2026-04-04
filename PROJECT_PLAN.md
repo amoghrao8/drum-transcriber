@@ -70,13 +70,15 @@ The lesson is stored in the Supabase `exercises` column.
 
 **Goal:** Display the transcription results clearly and accurately.
 
-**Approach tried and abandoned:** VexFlow 4 sheet music notation. VexFlow requires converting continuous event times into discrete rhythmic structure (measure buckets → 16th-note slots → chord grouping → explicit rests → voice balancing). Multiple failure points made this approach fragile and inaccurate.
+Two views are available, toggled in the UI:
 
-**Current approach:** SVG scatter plot, directly inspired by the ADTOF repository's own visualization.
+**View 1 — Sheet Music (default):** MusicXML rendered by OpenSheetMusicDisplay (OSMD).
 
-Each event's `time` field maps linearly to an x-coordinate at 80 px/second. Five instrument lanes (BD/SD/TT/HH/CY+RD) run horizontally with time on the x-axis. There is no quantization or measure math in the frontend — the backend times are trusted directly.
+`musicxml_builder.py` converts stored events + metadata into a valid MusicXML 3.1 document using Python's stdlib `xml.etree` — no extra dependencies. Events are grouped into measures using `grid_phase`, then serialised as a two-voice percussion score (Voice 1 stems-up for SD/HH/TOM/CYM, Voice 2 stems-down for BD). Ghost notes use parenthesised noteheads. The MusicXML is served from `GET /api/notation/musicxml/{job_id}` and rendered in the browser by OSMD (dynamically imported to keep it out of the initial bundle). The YouTube video title is shown as the score title via YouTube's oEmbed API.
 
-**Why this works:** The SVG plot and the ADTOF model share the same coordinate system (seconds). VexFlow required a lossful translation to rhythmic notation that introduced errors at every step.
+**Why this approach works where VexFlow didn't:** VexFlow is a low-level rendering primitive — the application must solve all the notation math (measure buckets, slot assignment, voice balancing, rest filling) before VexFlow can draw anything. Any bug in that math cascades visually. MusicXML is a structured format that encodes all of this explicitly, and OSMD is a purpose-built renderer that handles edge cases correctly.
+
+**View 2 — Event Plot:** SVG scatter plot, directly inspired by the ADTOF repository's own visualization. Each event's `time` maps linearly to x at 80 px/second. Five horizontal lanes (BD/SD/TT/HH/CY+RD). No quantization math — the backend times are trusted directly. Useful for verifying raw transcription accuracy.
 
 ---
 
@@ -90,12 +92,6 @@ Each event's `time` field maps linearly to an x-coordinate at 80 px/second. Five
 ---
 
 ## Potential Next Steps
-
-### Sheet music notation (non-trivial)
-The SVG scatter plot is accurate but not readable as notation. To get sheet music:
-1. Backend: convert the MIDI file (`mido`) to MusicXML using `music21` — one function call, the MIDI timing is already correct
-2. Frontend: render MusicXML with **OpenSheetMusicDisplay (OSMD)** — purpose-built for this, handles percussion clef correctly
-3. This sidesteps all the frontend quantization math that made VexFlow unreliable
 
 ### Hi-hat open/closed detection
 ADTOF's 5-class model merges open and closed hi-hat. A post-processing step could try to infer open hits from the RMS envelope shape (open hi-hats decay slower).

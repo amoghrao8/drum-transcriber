@@ -5,6 +5,7 @@ import { Search, Loader2, AlertCircle, Sparkles } from 'lucide-react';
 import { useTranscription } from '@/hooks/useTranscription';
 import { usePipeline } from '@/hooks/usePipeline';
 import DrumNotation from '@/components/DrumNotation';
+import SheetMusic from '@/components/SheetMusic';
 import MusicTeacherLesson from '@/components/MusicTeacherLesson';
 import PipelineProgress from '@/components/PipelineProgress';
 import CatLiLogo from '@/components/CatLiLogo';
@@ -14,6 +15,8 @@ export default function Home() {
   const [submittedUrl,  setSubmittedUrl]  = useState('');
   const [completedJobId, setCompletedJobId] = useState('');
   const [showPipeline,  setShowPipeline]  = useState(false);
+  const [activeView,    setActiveView]    = useState<'plot' | 'score'>('score');
+  const [videoTitle,    setVideoTitle]    = useState<string | null>(null);
 
   // ── Supabase read (existing transcription) ───────────────────────────────
   const { data, loading, error } = useTranscription({
@@ -31,6 +34,16 @@ export default function Home() {
       setCompletedJobId(pipeline.dbJobId);
     }
   }, [pipeline.status, pipeline.dbJobId]);
+
+  // Fetch YouTube video title via oEmbed (no API key required)
+  useEffect(() => {
+    if (!data?.youtube_url) return;
+    setVideoTitle(null);
+    fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(data.youtube_url)}&format=json`)
+      .then(r => r.json())
+      .then(d => setVideoTitle(d.title ?? null))
+      .catch(() => {});
+  }, [data?.youtube_url]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleSubmit = (e: React.FormEvent) => {
@@ -66,7 +79,7 @@ export default function Home() {
 
       {/* ── Nav ──────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-sm border-b border-catli-border">
-        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center gap-3">
+        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center gap-3">
           <CatLiLogo size={36} />
           <span className="font-extrabold text-xl text-catli-text tracking-tight">
             Cat<span className="text-catli-purple-dark">.li</span>
@@ -74,7 +87,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 py-14 space-y-10">
+      <main className="max-w-6xl mx-auto px-6 py-14 space-y-10">
 
         {/* ── Hero ─────────────────────────────────────────────────────────── */}
         {!hasResult && !showPipeline && (
@@ -192,7 +205,27 @@ export default function Home() {
               </span>
             </div>
 
-            <DrumNotation events={data.events} metadata={data.metadata} />
+            {/* View toggle */}
+            <div className="flex gap-1 p-1 bg-catli-purple-light rounded-2xl w-fit">
+              {(['score', 'plot'] as const).map(v => (
+                <button
+                  key={v}
+                  onClick={() => setActiveView(v)}
+                  className={`px-4 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                    activeView === v
+                      ? 'bg-white text-catli-purple-dark shadow-sm'
+                      : 'text-catli-muted hover:text-catli-text'
+                  }`}
+                >
+                  {v === 'score' ? 'Sheet Music' : 'Event Plot'}
+                </button>
+              ))}
+            </div>
+
+            {activeView === 'score'
+              ? <SheetMusic jobId={data.job_id} title={videoTitle ?? undefined} />
+              : <DrumNotation events={data.events} metadata={data.metadata} />
+            }
 
             {data.exercises ? (
               <MusicTeacherLesson exercises={data.exercises} />
@@ -201,11 +234,11 @@ export default function Home() {
                 <CatLiLogo size={52} />
                 <p className="text-sm font-semibold text-catli-text">No lesson yet!</p>
                 <p className="text-xs text-catli-muted">
-                  Run{' '}
+                  Call{' '}
                   <code className="font-mono bg-catli-purple-light text-catli-purple-dark px-1.5 py-0.5 rounded-lg">
-                    python trigger_lesson.py
+                    POST /api/audio/teach
                   </code>{' '}
-                  to generate one with Qwen&nbsp;2.5.
+                  with this job&apos;s ID to generate one with Qwen&nbsp;2.5.
                 </p>
               </div>
             )}
@@ -216,8 +249,8 @@ export default function Home() {
       {/* ── Footer ───────────────────────────────────────────────────────── */}
       <footer className="text-center pb-10 text-xs text-catli-muted">
         Cat.li &mdash; drum analysis powered by{' '}
-        <span className="text-catli-purple-dark font-medium">Qwen&nbsp;2.5</span> &amp;{' '}
-        <span className="text-catli-orange-dark font-medium">VexFlow</span>
+        <span className="text-catli-purple-dark font-medium">ADTOF</span> &amp;{' '}
+        <span className="text-catli-orange-dark font-medium">Qwen&nbsp;2.5</span>
       </footer>
     </div>
   );

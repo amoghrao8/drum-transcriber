@@ -1,6 +1,6 @@
 # Cat.li
 
-**Cat.li** is an end-to-end drum analysis and music education platform. Paste any YouTube URL, and Cat.li isolates the drum track, transcribes every hit using a neural drum transcription model, visualizes the results as a scatter plot, and generates a personalized practice lesson using a local LLM.
+**Cat.li** is an end-to-end drum analysis and music education platform. Paste any YouTube URL, and Cat.li isolates the drum track, transcribes every hit using a neural drum transcription model, renders the result as sheet music notation and an event scatter plot, and generates a personalized practice lesson using a local LLM.
 
 ---
 
@@ -26,7 +26,8 @@ YouTube URL
 │                                                              │
 │  usePipeline hook       →  poll 4-step progress             │
 │  useTranscription hook  →  fetch events + metadata          │
-│  DrumNotation           →  SVG scatter plot                  │
+│  SheetMusic             →  MusicXML → OSMD notation          │
+│  DrumNotation           →  SVG event scatter plot            │
 │  MusicTeacherLesson     →  react-markdown lesson card        │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -46,7 +47,8 @@ YouTube URL
 | Database | Supabase (PostgreSQL + JSONB) |
 | Frontend framework | Next.js 16 (Turbopack) · React 19 |
 | CSS | Tailwind CSS v4 |
-| Visualization | SVG scatter plot (inline React) |
+| Sheet music notation | MusicXML 3.1 (stdlib) + OpenSheetMusicDisplay |
+| Event visualization | SVG scatter plot (inline React) |
 | Markdown rendering | `react-markdown` |
 | GPU | NVIDIA RTX 5070 · CUDA 12.x · PyTorch 2.x |
 
@@ -68,7 +70,8 @@ drum-transcriber/
 │       │   ├── pipeline.py              # POST /pipeline/start  GET /pipeline/{id}
 │       │   ├── audio.py                 # POST /audio/extract  /separate  /process
 │       │   ├── analysis.py              # POST /audio/analyze
-│       │   └── teacher.py              # POST /audio/teach
+│       │   ├── teacher.py               # POST /audio/teach
+│       │   └── notation.py              # GET  /notation/musicxml/{job_id}
 │       ├── models/
 │       │   └── adtof/
 │       │       └── transcriber.py       # ADTOF Frame_RNN wrapper (lazy singleton)
@@ -77,6 +80,7 @@ drum-transcriber/
 │           ├── stem_separator.py        # Demucs async wrapper
 │           ├── drum_analyzer.py         # Full transcription pipeline
 │           ├── transcription_store.py   # Supabase update-or-insert
+│           ├── musicxml_builder.py      # MusicXML 3.1 generator (stdlib only)
 │           └── music_teacher.py         # Semantic log builder + Ollama lesson
 ├── frontend/
 │   ├── app/
@@ -84,7 +88,8 @@ drum-transcriber/
 │   │   ├── layout.tsx
 │   │   └── globals.css                  # Tailwind v4 + Cat.li pastel tokens
 │   ├── components/
-│   │   ├── DrumNotation.tsx             # SVG scatter plot (BD/SD/TT/HH/CY+RD)
+│   │   ├── SheetMusic.tsx               # OSMD sheet music renderer
+│   │   ├── DrumNotation.tsx             # SVG event scatter plot (BD/SD/TT/HH/CY+RD)
 │   │   ├── MusicTeacherLesson.tsx       # Markdown lesson on notepad background
 │   │   ├── PipelineProgress.tsx         # 4-step progress bar
 │   │   └── CatLiLogo.tsx               # SVG logo
@@ -197,6 +202,12 @@ Polls `GET /api/pipeline/{id}` every 3 seconds until `status` is `"complete"` or
 
 Queries Supabase's `drum_transcriptions` table using the browser anon key. Accepts a full YouTube URL (regex extracts the 11-char video ID for flexible `ilike` matching) or a direct `job_id`. Returns `{ data, loading, error }`.
 
+### `SheetMusic` component
+
+Fetches MusicXML from `GET /api/notation/musicxml/{job_id}`, then dynamically imports and renders it with **OpenSheetMusicDisplay (OSMD)**. Displays the YouTube video title (fetched via YouTube's oEmbed API) as the score title. Percussion staff uses two voices: Voice 1 stems-up (SD/HH/TOM/CYM) and Voice 2 stems-down (BD). Ghost notes are rendered with parenthesised noteheads per MusicXML 3.1 convention.
+
+The MusicXML is generated server-side in `musicxml_builder.py` using only Python's stdlib `xml.etree` — no extra dependencies. Events are grouped into measures using the stored `grid_phase` offset, then serialised as a two-voice percussion score.
+
 ### `DrumNotation` component
 
 Renders a horizontally scrollable SVG scatter plot mirroring the ADTOF visualization style:
@@ -300,3 +311,4 @@ Open **http://localhost:3000**, paste a YouTube URL, click **Analyze**.
 | `POST` | `/api/audio/process` | Extract + separate in one call |
 | `POST` | `/api/audio/analyze` | ADTOF transcription → events JSON |
 | `POST` | `/api/audio/teach` | Generate + save LLM lesson |
+| `GET` | `/api/notation/musicxml/{job_id}` | Generate + stream MusicXML 3.1 |

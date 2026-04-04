@@ -97,7 +97,7 @@ async def separate_audio_stems(body: SeparationRequest):
         sample_rate=result["sample_rate"],
         size_bytes=result["size_bytes"],
         device_used=result["device_used"],
-        message="Drums stem isolated successfully. Ready for onset detection.",
+        message="Drums stem isolated successfully. Ready for ADTOF transcription.",
     )
 
 

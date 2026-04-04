@@ -69,8 +69,8 @@ async def _run(pipeline_id: str, youtube_url: str) -> None:
             step=3,
             step_name="Transcribing hits",
             pct=62,
-            message="Split-band onset detection: kick (50-200 Hz), snare (200-5 kHz), "
-                    "hi-hat (5 kHz+). Quantising to 16th-note grid.",
+            message="ADTOF Frame_RNN neural transcription — detecting kick, snare, "
+                    "hi-hat, toms, and cymbals. Quantising to 16th-note grid.",
         )
         drums_wav = STEMS_OUTPUT_DIR / f"{job_id}_drums.wav"
         loop = asyncio.get_event_loop()
