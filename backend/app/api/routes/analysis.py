@@ -12,6 +12,9 @@ router = APIRouter(prefix="/audio", tags=["analysis"])
 
 class AnalyzeRequest(BaseModel):
     job_id: str
+    override_bpm: float | None = None
+    override_beats_per_bar: int | None = None
+    override_beat_unit: int | None = None
 
 
 class DrumEvent(BaseModel):
@@ -41,7 +44,10 @@ async def analyze_drums(body: AnalyzeRequest):
     loop = asyncio.get_event_loop()
     try:
         events, _, _ = await loop.run_in_executor(
-            None, partial(transcribe, drums_wav)
+            None, partial(transcribe, drums_wav,
+                          override_bpm=body.override_bpm,
+                          override_beats_per_bar=body.override_beats_per_bar,
+                          override_beat_unit=body.override_beat_unit)
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}")

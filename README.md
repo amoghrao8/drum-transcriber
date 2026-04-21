@@ -130,6 +130,8 @@ Detects tempo from the drum stem. Applies two corrections:
 - Halves/doubles the result to keep BPM in the 60–200 range
 - Checks a 3/4× candidate to catch librosa's known 4/3× tempo lock-on bias
 
+If the auto-detection is wrong, the user can supply manual overrides via the frontend (BPM and/or time signature fields). When `override_bpm` is set, auto-detected tempo is replaced and beat times are recomputed from the override value so the quantisation grid stays correct. `override_beats_per_bar` and `override_beat_unit` replace the numerator/denominator respectively. All three are optional and independent — any combination works.
+
 **3b. ADTOF Frame_RNN inference** (`app/models/adtof/transcriber.py`)
 
 Runs the pre-trained ADTOF Frame_RNN neural network on the full drum stem. ADTOF is a CRNN trained on 359 hours of real acoustic drum recordings. It outputs onset times per instrument class:
@@ -310,12 +312,12 @@ Open **http://localhost:3000**, paste a YouTube URL, click **Analyze**.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Health check |
-| `POST` | `/api/pipeline/start` | Start full 4-step pipeline |
+| `POST` | `/api/pipeline/start` | Start full 4-step pipeline (accepts optional `override_bpm`, `override_beats_per_bar`, `override_beat_unit`) |
 | `GET` | `/api/pipeline/{id}` | Poll pipeline progress |
 | `POST` | `/api/audio/extract` | Download YouTube audio → WAV |
 | `POST` | `/api/audio/separate` | Demucs drum stem isolation |
 | `POST` | `/api/audio/process` | Extract + separate in one call |
-| `POST` | `/api/audio/analyze` | ADTOF transcription → events JSON |
+| `POST` | `/api/audio/analyze` | ADTOF transcription → events JSON (accepts optional BPM/time sig overrides) |
 | `POST` | `/api/audio/teach` | Generate + save LLM lesson |
 | `GET` | `/api/notation/musicxml/{job_id}` | Generate + stream MusicXML 3.1 |
 | `GET` | `/api/notation/midi/{job_id}` | Generate + download GM MIDI file |

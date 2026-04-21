@@ -195,9 +195,19 @@ def _build_midi(
 
 def transcribe(
     file_path: str | Path,
+    *,
+    override_bpm: float | None = None,
+    override_beats_per_bar: int | None = None,
+    override_beat_unit: int | None = None,
 ) -> tuple[list[dict], mido.MidiFile, dict[str, Any]]:
     """
     Transcribe a drum-stem WAV using ADTOF neural drum transcription.
+
+    Parameters
+    ----------
+    override_bpm           : If set, skip auto BPM detection and use this value.
+    override_beats_per_bar : If set, override the numerator of the time signature.
+    override_beat_unit     : If set, override the denominator of the time signature.
 
     Returns
     -------
@@ -216,7 +226,20 @@ def transcribe(
     # ── Step 2: BPM + time signature ─────────────────────────────────────────
     bpm, beat_times          = _detect_bpm(y, sr)
     beats_per_bar, beat_unit = _infer_time_signature(y, sr, bpm, beat_times)
-    log.info("BPM %.1f  %d/%d", bpm, beats_per_bar, beat_unit)
+
+    # Apply manual overrides (if provided)
+    if override_bpm is not None:
+        bpm = override_bpm
+        # Recompute beat_times from the override BPM so quantisation grid is correct
+        beat_dur = 60.0 / bpm
+        beat_times = np.arange(beat_times[0] if len(beat_times) else 0.0, duration, beat_dur)
+    if override_beats_per_bar is not None:
+        beats_per_bar = override_beats_per_bar
+    if override_beat_unit is not None:
+        beat_unit = override_beat_unit
+
+    log.info("BPM %.1f  %d/%d%s", bpm, beats_per_bar, beat_unit,
+             "  (manual override)" if override_bpm or override_beats_per_bar or override_beat_unit else "")
 
     # ── Step 3: ADTOF inference ───────────────────────────────────────────────
     from app.models.adtof.transcriber import transcribe_stem

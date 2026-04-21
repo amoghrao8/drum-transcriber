@@ -34,7 +34,10 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 # Pipeline runner (runs in BackgroundTasks thread pool)
 # ---------------------------------------------------------------------------
 
-async def _run(pipeline_id: str, youtube_url: str) -> None:
+async def _run(pipeline_id: str, youtube_url: str, *,
+               override_bpm: float | None = None,
+               override_beats_per_bar: int | None = None,
+               override_beat_unit: int | None = None) -> None:
     """Execute the 4-step pipeline, writing progress to the job store."""
 
     def progress(**kw):
@@ -75,7 +78,10 @@ async def _run(pipeline_id: str, youtube_url: str) -> None:
         drums_wav = STEMS_OUTPUT_DIR / f"{job_id}_drums.wav"
         loop = asyncio.get_event_loop()
         events, midi_obj, metadata = await loop.run_in_executor(
-            None, partial(transcribe_drums, drums_wav)
+            None, partial(transcribe_drums, drums_wav,
+                          override_bpm=override_bpm,
+                          override_beats_per_bar=override_beats_per_bar,
+                          override_beat_unit=override_beat_unit)
         )
         await save_transcription(job_id, events, youtube_url, metadata)
         progress(pct=75)
@@ -124,6 +130,9 @@ async def _run(pipeline_id: str, youtube_url: str) -> None:
 
 class StartRequest(BaseModel):
     youtube_url: str
+    override_bpm: float | None = None
+    override_beats_per_bar: int | None = None
+    override_beat_unit: int | None = None
 
 
 class StartResponse(BaseModel):
@@ -153,7 +162,10 @@ async def start_pipeline(body: StartRequest, background_tasks: BackgroundTasks):
     """
     pipeline_id = uuid.uuid4().hex
     create_job(pipeline_id, body.youtube_url)
-    background_tasks.add_task(_run, pipeline_id, body.youtube_url)
+    background_tasks.add_task(_run, pipeline_id, body.youtube_url,
+                              override_bpm=body.override_bpm,
+                              override_beats_per_bar=body.override_beats_per_bar,
+                              override_beat_unit=body.override_beat_unit)
     return StartResponse(pipeline_id=pipeline_id)
 
 

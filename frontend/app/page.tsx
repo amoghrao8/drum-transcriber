@@ -19,6 +19,11 @@ export default function Home() {
   const [activeView,    setActiveView]    = useState<'plot' | 'score'>('score');
   const [videoTitle,    setVideoTitle]    = useState<string | null>(null);
 
+  // ── Manual BPM / time signature overrides ────────────────────────────────
+  const [manualBpm,      setManualBpm]      = useState('');
+  const [manualTimeSigN, setManualTimeSigN] = useState('');
+  const [manualTimeSigD, setManualTimeSigD] = useState('');
+
   // ── Supabase read (existing transcription) ───────────────────────────────
   const { data, loading, error } = useTranscription({
     youtubeUrl: !showPipeline && !completedJobId ? submittedUrl : undefined,
@@ -60,7 +65,14 @@ export default function Home() {
 
   const handleProcessNew = () => {
     setShowPipeline(true);
-    startPipeline(submittedUrl);
+    const overrides: Record<string, number | null> = {};
+    const bpmVal = parseFloat(manualBpm);
+    if (manualBpm && !isNaN(bpmVal) && bpmVal > 0) overrides.override_bpm = bpmVal;
+    const nVal = parseInt(manualTimeSigN, 10);
+    if (manualTimeSigN && !isNaN(nVal) && nVal > 0) overrides.override_beats_per_bar = nVal;
+    const dVal = parseInt(manualTimeSigD, 10);
+    if (manualTimeSigD && !isNaN(dVal) && dVal > 0) overrides.override_beat_unit = dVal;
+    startPipeline(submittedUrl, Object.keys(overrides).length ? overrides : undefined);
   };
 
   const handlePipelineReset = () => {
@@ -170,6 +182,58 @@ export default function Home() {
               <p className="font-semibold text-catli-purple-dark">What will happen:</p>
               <p>① Download audio &nbsp;·&nbsp; ② Isolate drums (Demucs) &nbsp;·&nbsp; ③ Transcribe hits &nbsp;·&nbsp; ④ Generate AI lesson</p>
             </div>
+
+            {/* ── Manual BPM / time signature overrides ────────────────────── */}
+            <div className="flex flex-wrap items-end justify-center gap-3 pt-2">
+              <div className="text-left">
+                <label className="block text-[10px] font-semibold text-catli-muted uppercase tracking-wider mb-1">
+                  BPM <span className="font-normal normal-case">(optional)</span>
+                </label>
+                <input
+                  type="number"
+                  min="30"
+                  max="300"
+                  step="0.1"
+                  value={manualBpm}
+                  onChange={e => setManualBpm(e.target.value)}
+                  placeholder="auto"
+                  className="w-24 px-3 py-2 rounded-xl border-2 border-catli-border bg-white
+                             text-xs text-catli-text placeholder-catli-muted text-center
+                             focus:outline-none focus:border-catli-purple transition-colors"
+                />
+              </div>
+              <div className="text-left">
+                <label className="block text-[10px] font-semibold text-catli-muted uppercase tracking-wider mb-1">
+                  Time sig <span className="font-normal normal-case">(optional)</span>
+                </label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={manualTimeSigN}
+                    onChange={e => setManualTimeSigN(e.target.value)}
+                    placeholder="auto"
+                    className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
+                               text-xs text-catli-text placeholder-catli-muted text-center
+                               focus:outline-none focus:border-catli-purple transition-colors"
+                  />
+                  <span className="text-catli-muted font-bold">/</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="16"
+                    value={manualTimeSigD}
+                    onChange={e => setManualTimeSigD(e.target.value)}
+                    placeholder="auto"
+                    className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
+                               text-xs text-catli-text placeholder-catli-muted text-center
+                               focus:outline-none focus:border-catli-purple transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
             <button
               onClick={handleProcessNew}
               className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl

@@ -19,6 +19,12 @@ const IDLE: PipelineState = {
   status: 'idle', step: 0, stepName: '', pct: 0, message: '', error: null, dbJobId: null,
 };
 
+export interface PipelineOverrides {
+  override_bpm?: number | null;
+  override_beats_per_bar?: number | null;
+  override_beat_unit?: number | null;
+}
+
 export function usePipeline() {
   const [pipelineId, setPipelineId] = useState<string | null>(null);
   const [state, setState] = useState<PipelineState>(IDLE);
@@ -60,14 +66,17 @@ export function usePipeline() {
   }, [pipelineId, poll]);
 
   // ── Public API ────────────────────────────────────────────────────────────
-  const start = useCallback(async (youtubeUrl: string) => {
+  const start = useCallback(async (youtubeUrl: string, overrides?: PipelineOverrides) => {
     setState({ ...IDLE, status: 'starting', message: 'Connecting to backend...' });
 
     try {
       const res = await fetch(apiUrl('/api/pipeline/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ youtube_url: youtubeUrl }),
+        body: JSON.stringify({
+          youtube_url: youtubeUrl,
+          ...overrides,
+        }),
       });
 
       if (!res.ok) {
