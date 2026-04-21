@@ -71,7 +71,7 @@ drum-transcriber/
 │       │   ├── audio.py                 # POST /audio/extract  /separate  /process
 │       │   ├── analysis.py              # POST /audio/analyze
 │       │   ├── teacher.py               # POST /audio/teach
-│       │   └── notation.py              # GET  /notation/musicxml/{job_id}
+│       │   └── notation.py              # GET  /notation/musicxml/{job_id}  /midi/{job_id}
 │       ├── models/
 │       │   └── adtof/
 │       │       └── transcriber.py       # ADTOF Frame_RNN wrapper (lazy singleton)
@@ -98,8 +98,8 @@ drum-transcriber/
 │   │   └── useTranscription.ts          # Fetch transcription by URL or job_id
 │   └── lib/
 │       ├── supabase.ts                  # Browser Supabase client
-│       └── api.ts                       # API wrapper
-└── adtof_pytorch/                       # ADTOF-pytorch submodule (weights bundled)
+│       └── api.ts                       # API wrapper + MIDI download helper
+└── adtof_pytorch/                       # Optional local ADTOF checkout for development
 ```
 
 ---
@@ -226,6 +226,12 @@ Scale: 80 px/second. Ghost notes rendered as smaller, faded purple dots.
 
 Renders the `exercises` Markdown string using `react-markdown` with custom component renderers. Section headers (`h2`) become colour-coded banners; `pre` blocks render ASCII notation exercises in dark monospace.
 
+### Export MIDI button
+
+An **Export MIDI** button appears in the results meta-pill row once a transcription is loaded. Clicking it calls `downloadMidi(jobId)` from `lib/api.ts`, which fetches `GET /api/notation/midi/{job_id}` as a blob and triggers a browser download of `{job_id}.mid`.
+
+The backend endpoint reconstructs the GM MIDI file on the fly from the stored events and metadata using `mido` (`_build_midi` in `drum_analyzer.py`). The file uses GM percussion channel 9 with correct tempo, time signature, and per-hit velocities.
+
 ---
 
 ## Supabase Schema
@@ -249,7 +255,7 @@ create table if not exists drum_transcriptions (
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12
 - Node.js 20+
 - NVIDIA GPU with CUDA 12.x (CPU fallback works, significantly slower)
 - [Ollama](https://ollama.ai) running locally with `qwen2.5:14b` pulled
@@ -258,14 +264,14 @@ create table if not exists drum_transcriptions (
 ### Install
 
 ```bash
-git clone <repo-url> --recurse-submodules
+git clone <repo-url>
 cd drum-transcriber
 
 # Python environment
 python -m venv venv
 venv/Scripts/activate          # Windows
 source venv/bin/activate        # macOS/Linux
-pip install -r backend/requirements.txt
+pip install -r backend/requirements.txt   # includes ADTOF-pytorch + bundled weights
 
 # Frontend
 cd frontend && npm install && cd ..
@@ -312,3 +318,4 @@ Open **http://localhost:3000**, paste a YouTube URL, click **Analyze**.
 | `POST` | `/api/audio/analyze` | ADTOF transcription → events JSON |
 | `POST` | `/api/audio/teach` | Generate + save LLM lesson |
 | `GET` | `/api/notation/musicxml/{job_id}` | Generate + stream MusicXML 3.1 |
+| `GET` | `/api/notation/midi/{job_id}` | Generate + download GM MIDI file |

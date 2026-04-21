@@ -10,7 +10,10 @@ Output: 5 drum classes mapped to GM MIDI pitches:
 """
 from __future__ import annotations
 
+from importlib import import_module
 import logging
+from pathlib import Path
+import sys
 from typing import Dict, List
 
 import torch
@@ -27,22 +30,54 @@ ADTOF_TO_GM: Dict[int, int] = {
 }
 
 _model = None
+_adtof_module = None
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_BUNDLED_PACKAGE_DIRS = (
+    _REPO_ROOT / "adtof_pytorch" / "src",
+    _REPO_ROOT / "adtof_pytorch",
+)
+
+
+def _import_adtof_package():
+    global _adtof_module
+    if _adtof_module is not None:
+        return _adtof_module
+
+    try:
+        _adtof_module = import_module("adtof_pytorch")
+        return _adtof_module
+    except ModuleNotFoundError as exc:
+        if exc.name != "adtof_pytorch":
+            raise
+
+    for candidate in _BUNDLED_PACKAGE_DIRS:
+        if candidate.exists():
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
+
+    try:
+        _adtof_module = import_module("adtof_pytorch")
+        return _adtof_module
+    except ModuleNotFoundError as exc:
+        if exc.name != "adtof_pytorch":
+            raise
+        search_paths = ", ".join(str(path) for path in _BUNDLED_PACKAGE_DIRS)
+        raise RuntimeError(
+            "ADTOF-pytorch is not available. Install backend requirements so pip can fetch "
+            f"the package, or populate the bundled checkout at one of: {search_paths}"
+        ) from exc
 
 
 def _get_model():
     global _model
     if _model is None:
-        from adtof_pytorch import (
-            create_frame_rnn_model,
-            calculate_n_bins,
-            load_pytorch_weights,
-            get_default_weights_path,
-        )
+        adtof = _import_adtof_package()
         log.info("Loading ADTOF Frame_RNN model…")
-        n_bins = calculate_n_bins()
-        m = create_frame_rnn_model(n_bins)
-        weights_path = get_default_weights_path()
-        m = load_pytorch_weights(m, str(weights_path), strict=False)
+        n_bins = adtof.calculate_n_bins()
+        m = adtof.create_frame_rnn_model(n_bins)
+        weights_path = adtof.get_default_weights_path()
+        m = adtof.load_pytorch_weights(m, str(weights_path), strict=False)
         m.eval()
         _model = m
         log.info("ADTOF model loaded.")
@@ -58,21 +93,16 @@ def transcribe_stem(wav_path: str) -> Dict[int, List[float]]:
     dict mapping GM MIDI pitch → list of onset times in seconds
     e.g. {36: [0.39, 0.88, ...], 38: [1.01, 2.22, ...], ...}
     """
-    from adtof_pytorch import (
-        load_audio_for_model,
-        PeakPicker,
-        FRAME_RNN_THRESHOLDS,
-        LABELS_5,
-    )
+    adtof = _import_adtof_package()
 
     model = _get_model()
-    x = load_audio_for_model(wav_path)
+    x = adtof.load_audio_for_model(wav_path)
 
     with torch.no_grad():
         pred = model(x).cpu().numpy()
 
-    picker = PeakPicker(thresholds=FRAME_RNN_THRESHOLDS, fps=100)
-    raw = picker.pick(pred, labels=LABELS_5)[0]
+    picker = adtof.PeakPicker(thresholds=adtof.FRAME_RNN_THRESHOLDS, fps=100)
+    raw = picker.pick(pred, labels=adtof.LABELS_5)[0]
     # raw = {35: [...], 38: [...], 47: [...], 42: [...], 49: [...]}
 
     # Remap ADTOF pitches to our GM constants

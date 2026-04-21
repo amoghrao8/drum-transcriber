@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Search, Loader2, AlertCircle, Sparkles } from 'lucide-react';
+import { Search, Loader2, AlertCircle, Sparkles, Download } from 'lucide-react';
 import { useTranscription } from '@/hooks/useTranscription';
 import { usePipeline } from '@/hooks/usePipeline';
+import { downloadMidi } from '@/lib/api';
 import DrumNotation from '@/components/DrumNotation';
 import SheetMusic from '@/components/SheetMusic';
 import MusicTeacherLesson from '@/components/MusicTeacherLesson';
@@ -203,6 +204,15 @@ export default function Home() {
               <span className="px-3 py-1.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-medium">
                 {new Date(data.created_at).toLocaleDateString()}
               </span>
+              <button
+                onClick={() => downloadMidi(data.job_id)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                           bg-catli-orange hover:bg-catli-orange-hover text-catli-text
+                           font-medium transition-all duration-150 hover:scale-105 active:scale-95
+                           shadow-[0_2px_8px_0_rgba(255,208,165,0.5)]"
+              >
+                <Download size={13} /> Export MIDI
+              </button>
             </div>
 
             {/* View toggle */}
