@@ -257,7 +257,7 @@ create table if not exists drum_transcriptions (
 
 ### Prerequisites
 
-- Python 3.12
+- Python 3.11+
 - Node.js 20+
 - NVIDIA GPU with CUDA 12.x (CPU fallback works, significantly slower)
 - [Ollama](https://ollama.ai) running locally with `qwen2.5:14b` pulled
