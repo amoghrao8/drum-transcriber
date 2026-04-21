@@ -59,10 +59,15 @@ export function usePipeline() {
   useEffect(() => {
     if (!pipelineId) return;
 
-    poll(pipelineId);                                         // immediate first check
-    intervalRef.current = setInterval(() => poll(pipelineId), 5000);
+    const id = pipelineId;
+    // Defer first poll to avoid synchronous setState in effect body
+    const timeout = setTimeout(() => poll(id), 0);
+    intervalRef.current = setInterval(() => poll(id), 5000);
 
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    return () => {
+      clearTimeout(timeout);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, [pipelineId, poll]);
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -87,7 +92,7 @@ export function usePipeline() {
 
       const { pipeline_id } = await res.json();
       setPipelineId(pipeline_id);
-    } catch (err) {
+    } catch {
       setState({
         ...IDLE, status: 'error',
         error: 'Could not reach the backend. Is the FastAPI server running on port 8000?',

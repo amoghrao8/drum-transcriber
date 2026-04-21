@@ -33,23 +33,30 @@ export default function Home() {
   // ── Full pipeline (new track) ────────────────────────────────────────────
   const { state: pipeline, start: startPipeline, reset: resetPipeline } = usePipeline();
 
-  // When pipeline finishes, switch back to Supabase fetch mode
-  useEffect(() => {
-    if (pipeline.status === 'complete' && pipeline.dbJobId) {
-      setShowPipeline(false);
-      setCompletedJobId(pipeline.dbJobId);
-    }
-  }, [pipeline.status, pipeline.dbJobId]);
+  // When pipeline finishes, switch back to Supabase fetch mode (adjust state during render)
+  const [prevDbJobId, setPrevDbJobId] = useState<string | null>(null);
+  if (pipeline.status === 'complete' && pipeline.dbJobId && pipeline.dbJobId !== prevDbJobId) {
+    setPrevDbJobId(pipeline.dbJobId);
+    setShowPipeline(false);
+    setCompletedJobId(pipeline.dbJobId);
+  }
 
   // Fetch YouTube video title via oEmbed (no API key required)
+  const youtubeUrl = data?.youtube_url;
+  const [prevYoutubeUrl, setPrevYoutubeUrl] = useState<string | null | undefined>(undefined);
+  if (youtubeUrl !== prevYoutubeUrl) {
+    setPrevYoutubeUrl(youtubeUrl);
+    if (youtubeUrl) setVideoTitle(null);
+  }
   useEffect(() => {
-    if (!data?.youtube_url) return;
-    setVideoTitle(null);
-    fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(data.youtube_url)}&format=json`)
+    if (!youtubeUrl) return;
+    let cancelled = false;
+    fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(youtubeUrl)}&format=json`)
       .then(r => r.json())
-      .then(d => setVideoTitle(d.title ?? null))
+      .then(d => { if (!cancelled) setVideoTitle(d.title ?? null); })
       .catch(() => {});
-  }, [data?.youtube_url]);
+    return () => { cancelled = true; };
+  }, [youtubeUrl]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleSubmit = (e: React.FormEvent) => {
