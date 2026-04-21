@@ -95,3 +95,4 @@ urllib3==2.6.3
 uvicorn==0.39.0
 websockets==15.0.1
 yarl==1.22.0
+git+https://github.com/xavriley/adtof-pytorch.git

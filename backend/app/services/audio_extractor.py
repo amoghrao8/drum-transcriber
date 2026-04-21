@@ -1,6 +1,7 @@
 import re
 import uuid
 import asyncio
+import subprocess
 from pathlib import Path
 
 from app.core.config import AUDIO_OUTPUT_DIR, FFMPEG_PATH, YTDLP_PATH
@@ -9,6 +10,17 @@ from app.core.config import AUDIO_OUTPUT_DIR, FFMPEG_PATH, YTDLP_PATH
 def _is_valid_youtube_url(url: str) -> bool:
     pattern = r"^(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w-]{11}"
     return bool(re.match(pattern, url))
+
+
+def _run_extraction_command(cmd: list[str]) -> subprocess.CompletedProcess[bytes]:
+    kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "check": False,
+    }
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.run(cmd, **kwargs)
 
 
 async def extract_audio(youtube_url: str) -> dict:
@@ -37,16 +49,14 @@ async def extract_audio(youtube_url: str) -> dict:
         youtube_url,
     ]
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
+    try:
+        proc = await asyncio.to_thread(_run_extraction_command, cmd)
+    except OSError as exc:
+        raise RuntimeError(f"Failed to launch yt-dlp: {exc}") from exc
 
     if proc.returncode != 0:
         raise RuntimeError(
-            f"yt-dlp failed (exit {proc.returncode}): {stderr.decode().strip()}"
+            f"yt-dlp failed (exit {proc.returncode}): {proc.stderr.decode(errors='replace').strip()}"
         )
 
     # yt-dlp writes <job_id>.wav when the template has no extension

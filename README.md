@@ -71,7 +71,7 @@ drum-transcriber/
 │       │   ├── audio.py                 # POST /audio/extract  /separate  /process
 │       │   ├── analysis.py              # POST /audio/analyze
 │       │   ├── teacher.py               # POST /audio/teach
-│       │   └── notation.py              # GET  /notation/musicxml/{job_id}
+│       │   └── notation.py              # GET  /notation/musicxml/{job_id}  /midi/{job_id}
 │       ├── models/
 │       │   └── adtof/
 │       │       └── transcriber.py       # ADTOF Frame_RNN wrapper (lazy singleton)
@@ -98,8 +98,8 @@ drum-transcriber/
 │   │   └── useTranscription.ts          # Fetch transcription by URL or job_id
 │   └── lib/
 │       ├── supabase.ts                  # Browser Supabase client
-│       └── api.ts                       # API wrapper
-└── adtof_pytorch/                       # ADTOF-pytorch submodule (weights bundled)
+│       └── api.ts                       # API wrapper + MIDI download helper
+└── adtof_pytorch/                       # Optional local ADTOF checkout for development
 ```
 
 ---
@@ -129,6 +129,8 @@ This is the core analysis step. It runs five sequential operations on the drums 
 Detects tempo from the drum stem. Applies two corrections:
 - Halves/doubles the result to keep BPM in the 60–200 range
 - Checks a 3/4× candidate to catch librosa's known 4/3× tempo lock-on bias
+
+If the auto-detection is wrong, the user can supply manual overrides via the frontend (BPM and/or time signature fields). When `override_bpm` is set, auto-detected tempo is replaced and beat times are recomputed from the override value so the quantisation grid stays correct. `override_beats_per_bar` and `override_beat_unit` replace the numerator/denominator respectively. All three are optional and independent — any combination works.
 
 **3b. ADTOF Frame_RNN inference** (`app/models/adtof/transcriber.py`)
 
@@ -226,6 +228,12 @@ Scale: 80 px/second. Ghost notes rendered as smaller, faded purple dots.
 
 Renders the `exercises` Markdown string using `react-markdown` with custom component renderers. Section headers (`h2`) become colour-coded banners; `pre` blocks render ASCII notation exercises in dark monospace.
 
+### Export MIDI button
+
+An **Export MIDI** button appears in the results meta-pill row once a transcription is loaded. Clicking it calls `downloadMidi(jobId)` from `lib/api.ts`, which fetches `GET /api/notation/midi/{job_id}` as a blob and triggers a browser download of `{job_id}.mid`.
+
+The backend endpoint reconstructs the GM MIDI file on the fly from the stored events and metadata using `mido` (`_build_midi` in `drum_analyzer.py`). The file uses GM percussion channel 9 with correct tempo, time signature, and per-hit velocities.
+
 ---
 
 ## Supabase Schema
@@ -258,14 +266,14 @@ create table if not exists drum_transcriptions (
 ### Install
 
 ```bash
-git clone <repo-url> --recurse-submodules
+git clone <repo-url>
 cd drum-transcriber
 
 # Python environment
 python -m venv venv
 venv/Scripts/activate          # Windows
 source venv/bin/activate        # macOS/Linux
-pip install -r backend/requirements.txt
+pip install -r backend/requirements.txt   # includes ADTOF-pytorch + bundled weights
 
 # Frontend
 cd frontend && npm install && cd ..
@@ -304,11 +312,12 @@ Open **http://localhost:3000**, paste a YouTube URL, click **Analyze**.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Health check |
-| `POST` | `/api/pipeline/start` | Start full 4-step pipeline |
+| `POST` | `/api/pipeline/start` | Start full 4-step pipeline (accepts optional `override_bpm`, `override_beats_per_bar`, `override_beat_unit`) |
 | `GET` | `/api/pipeline/{id}` | Poll pipeline progress |
 | `POST` | `/api/audio/extract` | Download YouTube audio → WAV |
 | `POST` | `/api/audio/separate` | Demucs drum stem isolation |
 | `POST` | `/api/audio/process` | Extract + separate in one call |
-| `POST` | `/api/audio/analyze` | ADTOF transcription → events JSON |
+| `POST` | `/api/audio/analyze` | ADTOF transcription → events JSON (accepts optional BPM/time sig overrides) |
 | `POST` | `/api/audio/teach` | Generate + save LLM lesson |
 | `GET` | `/api/notation/musicxml/{job_id}` | Generate + stream MusicXML 3.1 |
+| `GET` | `/api/notation/midi/{job_id}` | Generate + download GM MIDI file |

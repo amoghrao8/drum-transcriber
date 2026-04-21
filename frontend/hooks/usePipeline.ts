@@ -19,6 +19,12 @@ const IDLE: PipelineState = {
   status: 'idle', step: 0, stepName: '', pct: 0, message: '', error: null, dbJobId: null,
 };
 
+export interface PipelineOverrides {
+  override_bpm?: number | null;
+  override_beats_per_bar?: number | null;
+  override_beat_unit?: number | null;
+}
+
 export function usePipeline() {
   const [pipelineId, setPipelineId] = useState<string | null>(null);
   const [state, setState] = useState<PipelineState>(IDLE);
@@ -53,21 +59,29 @@ export function usePipeline() {
   useEffect(() => {
     if (!pipelineId) return;
 
-    poll(pipelineId);                                         // immediate first check
-    intervalRef.current = setInterval(() => poll(pipelineId), 5000);
+    const id = pipelineId;
+    // Defer first poll to avoid synchronous setState in effect body
+    const timeout = setTimeout(() => poll(id), 0);
+    intervalRef.current = setInterval(() => poll(id), 5000);
 
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    return () => {
+      clearTimeout(timeout);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, [pipelineId, poll]);
 
   // ── Public API ────────────────────────────────────────────────────────────
-  const start = useCallback(async (youtubeUrl: string) => {
+  const start = useCallback(async (youtubeUrl: string, overrides?: PipelineOverrides) => {
     setState({ ...IDLE, status: 'starting', message: 'Connecting to backend...' });
 
     try {
       const res = await fetch(apiUrl('/api/pipeline/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ youtube_url: youtubeUrl }),
+        body: JSON.stringify({
+          youtube_url: youtubeUrl,
+          ...overrides,
+        }),
       });
 
       if (!res.ok) {
@@ -78,7 +92,7 @@ export function usePipeline() {
 
       const { pipeline_id } = await res.json();
       setPipelineId(pipeline_id);
-    } catch (err) {
+    } catch {
       setState({
         ...IDLE, status: 'error',
         error: 'Could not reach the backend. Is the FastAPI server running on port 8000?',

@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Search, Loader2, AlertCircle, Sparkles } from 'lucide-react';
+import { Search, Loader2, AlertCircle, Sparkles, Download } from 'lucide-react';
 import { useTranscription } from '@/hooks/useTranscription';
 import { usePipeline } from '@/hooks/usePipeline';
+import { downloadMidi } from '@/lib/api';
 import DrumNotation from '@/components/DrumNotation';
 import SheetMusic from '@/components/SheetMusic';
 import MusicTeacherLesson from '@/components/MusicTeacherLesson';
@@ -18,6 +19,11 @@ export default function Home() {
   const [activeView,    setActiveView]    = useState<'plot' | 'score'>('score');
   const [videoTitle,    setVideoTitle]    = useState<string | null>(null);
 
+  // ── Manual BPM / time signature overrides ────────────────────────────────
+  const [manualBpm,      setManualBpm]      = useState('');
+  const [manualTimeSigN, setManualTimeSigN] = useState('');
+  const [manualTimeSigD, setManualTimeSigD] = useState('');
+
   // ── Supabase read (existing transcription) ───────────────────────────────
   const { data, loading, error } = useTranscription({
     youtubeUrl: !showPipeline && !completedJobId ? submittedUrl : undefined,
@@ -27,23 +33,30 @@ export default function Home() {
   // ── Full pipeline (new track) ────────────────────────────────────────────
   const { state: pipeline, start: startPipeline, reset: resetPipeline } = usePipeline();
 
-  // When pipeline finishes, switch back to Supabase fetch mode
-  useEffect(() => {
-    if (pipeline.status === 'complete' && pipeline.dbJobId) {
-      setShowPipeline(false);
-      setCompletedJobId(pipeline.dbJobId);
-    }
-  }, [pipeline.status, pipeline.dbJobId]);
+  // When pipeline finishes, switch back to Supabase fetch mode (adjust state during render)
+  const [prevDbJobId, setPrevDbJobId] = useState<string | null>(null);
+  if (pipeline.status === 'complete' && pipeline.dbJobId && pipeline.dbJobId !== prevDbJobId) {
+    setPrevDbJobId(pipeline.dbJobId);
+    setShowPipeline(false);
+    setCompletedJobId(pipeline.dbJobId);
+  }
 
   // Fetch YouTube video title via oEmbed (no API key required)
+  const youtubeUrl = data?.youtube_url;
+  const [prevYoutubeUrl, setPrevYoutubeUrl] = useState<string | null | undefined>(undefined);
+  if (youtubeUrl !== prevYoutubeUrl) {
+    setPrevYoutubeUrl(youtubeUrl);
+    if (youtubeUrl) setVideoTitle(null);
+  }
   useEffect(() => {
-    if (!data?.youtube_url) return;
-    setVideoTitle(null);
-    fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(data.youtube_url)}&format=json`)
+    if (!youtubeUrl) return;
+    let cancelled = false;
+    fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(youtubeUrl)}&format=json`)
       .then(r => r.json())
-      .then(d => setVideoTitle(d.title ?? null))
+      .then(d => { if (!cancelled) setVideoTitle(d.title ?? null); })
       .catch(() => {});
-  }, [data?.youtube_url]);
+    return () => { cancelled = true; };
+  }, [youtubeUrl]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
   const handleSubmit = (e: React.FormEvent) => {
@@ -59,7 +72,14 @@ export default function Home() {
 
   const handleProcessNew = () => {
     setShowPipeline(true);
-    startPipeline(submittedUrl);
+    const overrides: Record<string, number | null> = {};
+    const bpmVal = parseFloat(manualBpm);
+    if (manualBpm && !isNaN(bpmVal) && bpmVal > 0) overrides.override_bpm = bpmVal;
+    const nVal = parseInt(manualTimeSigN, 10);
+    if (manualTimeSigN && !isNaN(nVal) && nVal > 0) overrides.override_beats_per_bar = nVal;
+    const dVal = parseInt(manualTimeSigD, 10);
+    if (manualTimeSigD && !isNaN(dVal) && dVal > 0) overrides.override_beat_unit = dVal;
+    startPipeline(submittedUrl, Object.keys(overrides).length ? overrides : undefined);
   };
 
   const handlePipelineReset = () => {
@@ -169,6 +189,58 @@ export default function Home() {
               <p className="font-semibold text-catli-purple-dark">What will happen:</p>
               <p>① Download audio &nbsp;·&nbsp; ② Isolate drums (Demucs) &nbsp;·&nbsp; ③ Transcribe hits &nbsp;·&nbsp; ④ Generate AI lesson</p>
             </div>
+
+            {/* ── Manual BPM / time signature overrides ────────────────────── */}
+            <div className="flex flex-wrap items-end justify-center gap-3 pt-2">
+              <div className="text-left">
+                <label className="block text-[10px] font-semibold text-catli-muted uppercase tracking-wider mb-1">
+                  BPM <span className="font-normal normal-case">(optional)</span>
+                </label>
+                <input
+                  type="number"
+                  min="30"
+                  max="300"
+                  step="0.1"
+                  value={manualBpm}
+                  onChange={e => setManualBpm(e.target.value)}
+                  placeholder="auto"
+                  className="w-24 px-3 py-2 rounded-xl border-2 border-catli-border bg-white
+                             text-xs text-catli-text placeholder-catli-muted text-center
+                             focus:outline-none focus:border-catli-purple transition-colors"
+                />
+              </div>
+              <div className="text-left">
+                <label className="block text-[10px] font-semibold text-catli-muted uppercase tracking-wider mb-1">
+                  Time sig <span className="font-normal normal-case">(optional)</span>
+                </label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={manualTimeSigN}
+                    onChange={e => setManualTimeSigN(e.target.value)}
+                    placeholder="auto"
+                    className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
+                               text-xs text-catli-text placeholder-catli-muted text-center
+                               focus:outline-none focus:border-catli-purple transition-colors"
+                  />
+                  <span className="text-catli-muted font-bold">/</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="16"
+                    value={manualTimeSigD}
+                    onChange={e => setManualTimeSigD(e.target.value)}
+                    placeholder="auto"
+                    className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
+                               text-xs text-catli-text placeholder-catli-muted text-center
+                               focus:outline-none focus:border-catli-purple transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
             <button
               onClick={handleProcessNew}
               className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl
@@ -203,6 +275,15 @@ export default function Home() {
               <span className="px-3 py-1.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-medium">
                 {new Date(data.created_at).toLocaleDateString()}
               </span>
+              <button
+                onClick={() => downloadMidi(data.job_id)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                           bg-catli-orange hover:bg-catli-orange-hover text-catli-text
+                           font-medium transition-all duration-150 hover:scale-105 active:scale-95
+                           shadow-[0_2px_8px_0_rgba(255,208,165,0.5)]"
+              >
+                <Download size={13} /> Export MIDI
+              </button>
             </div>
 
             {/* View toggle */}
