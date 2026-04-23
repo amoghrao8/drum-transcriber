@@ -25,6 +25,8 @@ export default function Home() {
   const [manualTimeSigD, setManualTimeSigD] = useState('');
   const [quantize,       setQuantize]       = useState(false);
   const [aiLesson,       setAiLesson]       = useState(false);
+  const [chBuildPct,     setChBuildPct]     = useState<number | null>(null);
+  const [chBuildMsg,     setChBuildMsg]     = useState('');
   // ── Supabase read (existing transcription) ───────────────────────────────
   const { data, loading, error } = useTranscription({
     youtubeUrl: !showPipeline && !completedJobId ? submittedUrl : undefined,
@@ -316,13 +318,38 @@ export default function Home() {
                 <Download size={13} /> Export MIDI
               </button>
               <button
-                onClick={() => downloadCloneHero(data.job_id)}
+                onClick={async () => {
+                  if (chBuildPct !== null) return;
+                  setChBuildPct(0);
+                  setChBuildMsg('Starting…');
+                  try {
+                    await downloadCloneHero(data.job_id, (pct, msg) => {
+                      setChBuildPct(pct);
+                      setChBuildMsg(msg);
+                    });
+                  } catch {
+                    // ignore – user already sees button reset
+                  } finally {
+                    setChBuildPct(null);
+                    setChBuildMsg('');
+                  }
+                }}
+                disabled={chBuildPct !== null}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
                            bg-catli-orange hover:bg-catli-orange-hover text-catli-text
                            font-medium transition-all duration-150 hover:scale-105 active:scale-95
-                           shadow-[0_2px_8px_0_rgba(255,208,165,0.5)]"
+                           shadow-[0_2px_8px_0_rgba(255,208,165,0.5)] disabled:opacity-70 disabled:cursor-wait"
               >
-                <Download size={13} /> Clone Hero Chart
+                {chBuildPct !== null ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    {chBuildPct}% — {chBuildMsg}
+                  </>
+                ) : (
+                  <>
+                    <Download size={13} /> Clone Hero Chart
+                  </>
+                )}
               </button>
             </div>
 
