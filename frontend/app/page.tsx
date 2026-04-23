@@ -23,8 +23,8 @@ export default function Home() {
   const [manualBpm,      setManualBpm]      = useState('');
   const [manualTimeSigN, setManualTimeSigN] = useState('');
   const [manualTimeSigD, setManualTimeSigD] = useState('');
-  const [quantize,       setQuantize]       = useState(true);
-  const [aiLesson,       setAiLesson]       = useState(true);
+  const [quantize,       setQuantize]       = useState(false);
+  const [aiLesson,       setAiLesson]       = useState(false);
   // ── Supabase read (existing transcription) ───────────────────────────────
   const { data, loading, error } = useTranscription({
     youtubeUrl: !showPipeline && !completedJobId ? submittedUrl : undefined,
@@ -223,7 +223,7 @@ export default function Home() {
                     max="12"
                     value={manualTimeSigN}
                     onChange={e => setManualTimeSigN(e.target.value)}
-                    placeholder="auto"
+                    placeholder="4"
                     className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
                                text-xs text-catli-text placeholder-catli-muted text-center
                                focus:outline-none focus:border-catli-purple transition-colors"
@@ -235,7 +235,7 @@ export default function Home() {
                     max="16"
                     value={manualTimeSigD}
                     onChange={e => setManualTimeSigD(e.target.value)}
-                    placeholder="auto"
+                    placeholder="4"
                     className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
                                text-xs text-catli-text placeholder-catli-muted text-center
                                focus:outline-none focus:border-catli-purple transition-colors"

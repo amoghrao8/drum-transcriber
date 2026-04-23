@@ -15,7 +15,7 @@ class AnalyzeRequest(BaseModel):
     override_bpm: float | None = None
     override_beats_per_bar: int | None = None
     override_beat_unit: int | None = None
-    quantize: bool = True
+    quantize: bool = False
 
 
 class DrumEvent(BaseModel):

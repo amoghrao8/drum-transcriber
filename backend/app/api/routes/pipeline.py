@@ -38,8 +38,8 @@ async def _run(pipeline_id: str, youtube_url: str, *,
                override_bpm: float | None = None,
                override_beats_per_bar: int | None = None,
                override_beat_unit: int | None = None,
-               quantize: bool = True,
-               generate_ai_lesson: bool = True) -> None:
+               quantize: bool = False,
+               generate_ai_lesson: bool = False) -> None:
     """Execute the 4-step pipeline, writing progress to the job store."""
 
     def progress(**kw):
@@ -137,8 +137,8 @@ class StartRequest(BaseModel):
     override_bpm: float | None = None
     override_beats_per_bar: int | None = None
     override_beat_unit: int | None = None
-    quantize: bool = True
-    generate_ai_lesson: bool = True
+    quantize: bool = False
+    generate_ai_lesson: bool = False
 
 
 class StartResponse(BaseModel):
