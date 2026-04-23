@@ -199,6 +199,7 @@ def transcribe(
     override_bpm: float | None = None,
     override_beats_per_bar: int | None = None,
     override_beat_unit: int | None = None,
+    quantize: bool = True,
 ) -> tuple[list[dict], mido.MidiFile, dict[str, Any]]:
     """
     Transcribe a drum-stem WAV using ADTOF neural drum transcription.
@@ -208,6 +209,7 @@ def transcribe(
     override_bpm           : If set, skip auto BPM detection and use this value.
     override_beats_per_bar : If set, override the numerator of the time signature.
     override_beat_unit     : If set, override the denominator of the time signature.
+    quantize               : If False, skip 16th-note grid quantisation.
 
     Returns
     -------
@@ -282,8 +284,11 @@ def transcribe(
             })
 
     # ── Steps 5-7: Post-processing ────────────────────────────────────────────
-    events, grid_dur, phase = _quantize(events, bpm, beats_per_bar,
-                                        subdivisions=4, beat_times=beat_times)
+    grid_dur = 60.0 / bpm / 4
+    phase    = 0.0
+    if quantize:
+        events, grid_dur, phase = _quantize(events, bpm, beats_per_bar,
+                                            subdivisions=4, beat_times=beat_times)
     events = _tag_ghosts(events)
     midi   = _build_midi(events, bpm, beats_per_bar, beat_unit)
 
@@ -297,6 +302,7 @@ def transcribe(
         "beat_unit":         beat_unit,
         "duration":          round(duration, 2),
         "event_count":       len(events),
+        "quantized":         quantize,
         "grid_phase":        round(float(phase), 6),
         "grid_subdivisions": 4,
     }

@@ -69,10 +69,19 @@ def _run_separation(input_wav: Path, job_id: str) -> dict:
     output_path = STEMS_OUTPUT_DIR / f"{job_id}_drums.wav"
     sf.write(str(output_path), drums_wav.numpy().T, model.samplerate)
 
+    # Build drumless mix (sum of all stems except drums)
+    drumless_wav = sum(
+        sources[i].cpu() for i in range(len(model.sources)) if i != drums_idx
+    )
+    drumless_path = STEMS_OUTPUT_DIR / f"{job_id}_drumless.wav"
+    sf.write(str(drumless_path), drumless_wav.numpy().T, model.samplerate)
+
     return {
         "job_id": job_id,
         "drums_file": output_path.name,
         "drums_path": str(output_path),
+        "drumless_file": drumless_path.name,
+        "drumless_path": str(drumless_path),
         "sample_rate": model.samplerate,
         "size_bytes": output_path.stat().st_size,
         "device_used": str(device),

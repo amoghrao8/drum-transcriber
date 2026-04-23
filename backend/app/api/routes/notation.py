@@ -6,6 +6,9 @@ GET /api/notation/musicxml/{job_id}
 
 GET /api/notation/midi/{job_id}
   Returns a GM MIDI file (.mid) for the stored transcription.
+
+GET /api/notation/clonehero/{job_id}
+  Returns a Clone Hero chart zip for the stored transcription.
 """
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -13,6 +16,7 @@ from fastapi.responses import Response
 from app.core.supabase_client import supabase
 from app.services.musicxml_builder import build_musicxml
 from app.services.drum_analyzer import _build_midi, midi_to_bytes
+from app.services.clonehero_builder import build_chart_zip
 
 router = APIRouter(prefix="/notation", tags=["notation"])
 
@@ -89,4 +93,39 @@ def get_midi(job_id: str):
         content=midi_bytes,
         media_type="audio/midi",
         headers={"Content-Disposition": f'attachment; filename="{job_id}.mid"'},
+    )
+
+
+@router.get("/clonehero/{job_id}")
+def get_clonehero(job_id: str):
+    """
+    Fetch stored events + metadata for job_id and return a Clone Hero chart zip.
+    """
+    resp = (
+        supabase.table("drum_transcriptions")
+        .select("events, metadata")
+        .eq("job_id", job_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not resp.data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No transcription found for job_id '{job_id}'.",
+        )
+
+    row      = resp.data[0]
+    events   = row.get("events")   or []
+    metadata = row.get("metadata") or {}
+
+    if not events:
+        raise HTTPException(status_code=422, detail="Transcription has no events.")
+
+    zip_bytes = build_chart_zip(events, metadata, song_name=job_id)
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{job_id}_clonehero.zip"'},
     )
