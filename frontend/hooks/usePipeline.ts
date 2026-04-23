@@ -23,6 +23,8 @@ export interface PipelineOverrides {
   override_bpm?: number | null;
   override_beats_per_bar?: number | null;
   override_beat_unit?: number | null;
+  quantize?: boolean;
+  generate_ai_lesson?: boolean;
 }
 
 export function usePipeline() {

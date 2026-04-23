@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Search, Loader2, AlertCircle, Sparkles, Download } from 'lucide-react';
 import { useTranscription } from '@/hooks/useTranscription';
 import { usePipeline } from '@/hooks/usePipeline';
-import { downloadMidi } from '@/lib/api';
+import { downloadMidi, downloadCloneHero } from '@/lib/api';
 import DrumNotation from '@/components/DrumNotation';
 import SheetMusic from '@/components/SheetMusic';
 import MusicTeacherLesson from '@/components/MusicTeacherLesson';
@@ -23,7 +23,10 @@ export default function Home() {
   const [manualBpm,      setManualBpm]      = useState('');
   const [manualTimeSigN, setManualTimeSigN] = useState('');
   const [manualTimeSigD, setManualTimeSigD] = useState('');
-
+  const [quantize,       setQuantize]       = useState(false);
+  const [aiLesson,       setAiLesson]       = useState(false);
+  const [chBuildPct,     setChBuildPct]     = useState<number | null>(null);
+  const [chBuildMsg,     setChBuildMsg]     = useState('');
   // ── Supabase read (existing transcription) ───────────────────────────────
   const { data, loading, error } = useTranscription({
     youtubeUrl: !showPipeline && !completedJobId ? submittedUrl : undefined,
@@ -72,13 +75,15 @@ export default function Home() {
 
   const handleProcessNew = () => {
     setShowPipeline(true);
-    const overrides: Record<string, number | null> = {};
+    const overrides: Record<string, number | boolean | null> = {};
     const bpmVal = parseFloat(manualBpm);
     if (manualBpm && !isNaN(bpmVal) && bpmVal > 0) overrides.override_bpm = bpmVal;
     const nVal = parseInt(manualTimeSigN, 10);
     if (manualTimeSigN && !isNaN(nVal) && nVal > 0) overrides.override_beats_per_bar = nVal;
     const dVal = parseInt(manualTimeSigD, 10);
     if (manualTimeSigD && !isNaN(dVal) && dVal > 0) overrides.override_beat_unit = dVal;
+    if (!quantize) overrides.quantize = false;
+    if (!aiLesson) overrides.generate_ai_lesson = false;
     startPipeline(submittedUrl, Object.keys(overrides).length ? overrides : undefined);
   };
 
@@ -220,7 +225,7 @@ export default function Home() {
                     max="12"
                     value={manualTimeSigN}
                     onChange={e => setManualTimeSigN(e.target.value)}
-                    placeholder="auto"
+                    placeholder="4"
                     className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
                                text-xs text-catli-text placeholder-catli-muted text-center
                                focus:outline-none focus:border-catli-purple transition-colors"
@@ -232,12 +237,40 @@ export default function Home() {
                     max="16"
                     value={manualTimeSigD}
                     onChange={e => setManualTimeSigD(e.target.value)}
-                    placeholder="auto"
+                    placeholder="4"
                     className="w-14 px-2 py-2 rounded-xl border-2 border-catli-border bg-white
                                text-xs text-catli-text placeholder-catli-muted text-center
                                focus:outline-none focus:border-catli-purple transition-colors"
                   />
                 </div>
+              </div>
+              <div className="text-left flex items-end pb-0.5">
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={quantize}
+                    onChange={e => setQuantize(e.target.checked)}
+                    className="w-4 h-4 rounded border-2 border-catli-border text-catli-purple
+                               focus:ring-catli-purple accent-catli-purple cursor-pointer"
+                  />
+                  <span className="text-[10px] font-semibold text-catli-muted uppercase tracking-wider">
+                    Quantize
+                  </span>
+                </label>
+              </div>
+              <div className="text-left flex items-end pb-0.5">
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={aiLesson}
+                    onChange={e => setAiLesson(e.target.checked)}
+                    className="w-4 h-4 rounded border-2 border-catli-border text-catli-purple
+                               focus:ring-catli-purple accent-catli-purple cursor-pointer"
+                  />
+                  <span className="text-[10px] font-semibold text-catli-muted uppercase tracking-wider">
+                    AI Lesson
+                  </span>
+                </label>
               </div>
             </div>
 
@@ -267,7 +300,7 @@ export default function Home() {
             {/* Meta pills */}
             <div className="flex flex-wrap items-center gap-2 text-xs text-catli-muted">
               <span className="px-3 py-1.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-mono font-medium">
-                {data.job_id.slice(0, 12)}&hellip;
+                {data.job_id}
               </span>
               <span className="px-3 py-1.5 rounded-full bg-catli-purple-light text-catli-purple-dark font-medium">
                 {data.event_count.toLocaleString()} events
@@ -283,6 +316,40 @@ export default function Home() {
                            shadow-[0_2px_8px_0_rgba(255,208,165,0.5)]"
               >
                 <Download size={13} /> Export MIDI
+              </button>
+              <button
+                onClick={async () => {
+                  if (chBuildPct !== null) return;
+                  setChBuildPct(0);
+                  setChBuildMsg('Starting…');
+                  try {
+                    await downloadCloneHero(data.job_id, (pct, msg) => {
+                      setChBuildPct(pct);
+                      setChBuildMsg(msg);
+                    });
+                  } catch {
+                    // ignore – user already sees button reset
+                  } finally {
+                    setChBuildPct(null);
+                    setChBuildMsg('');
+                  }
+                }}
+                disabled={chBuildPct !== null}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                           bg-catli-orange hover:bg-catli-orange-hover text-catli-text
+                           font-medium transition-all duration-150 hover:scale-105 active:scale-95
+                           shadow-[0_2px_8px_0_rgba(255,208,165,0.5)] disabled:opacity-70 disabled:cursor-wait"
+              >
+                {chBuildPct !== null ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    {chBuildPct}% — {chBuildMsg}
+                  </>
+                ) : (
+                  <>
+                    <Download size={13} /> Clone Hero Chart
+                  </>
+                )}
               </button>
             </div>
 

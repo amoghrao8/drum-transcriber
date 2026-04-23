@@ -46,6 +46,10 @@ def _resolve_binary(name: str) -> str:
 FFMPEG_PATH = shutil.which("ffmpeg") or "ffmpeg"
 YTDLP_PATH  = _resolve_binary("yt-dlp")
 
+# Browser to read cookies from for yt-dlp (e.g. "chrome", "firefox", "edge").
+# Set YTDLP_COOKIES_BROWSER env var to override. Empty string disables.
+YTDLP_COOKIES_BROWSER: str = os.environ.get("YTDLP_COOKIES_BROWSER", "chrome")
+
 # Use CUDA on NVIDIA GPU if available, fall back to CPU
 def get_torch_device() -> torch.device:
     if torch.cuda.is_available():

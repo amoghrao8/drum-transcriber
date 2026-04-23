@@ -37,7 +37,9 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 async def _run(pipeline_id: str, youtube_url: str, *,
                override_bpm: float | None = None,
                override_beats_per_bar: int | None = None,
-               override_beat_unit: int | None = None) -> None:
+               override_beat_unit: int | None = None,
+               quantize: bool = False,
+               generate_ai_lesson: bool = False) -> None:
     """Execute the 4-step pipeline, writing progress to the job store."""
 
     def progress(**kw):
@@ -81,29 +83,31 @@ async def _run(pipeline_id: str, youtube_url: str, *,
             None, partial(transcribe_drums, drums_wav,
                           override_bpm=override_bpm,
                           override_beats_per_bar=override_beats_per_bar,
-                          override_beat_unit=override_beat_unit)
+                          override_beat_unit=override_beat_unit,
+                          quantize=quantize)
         )
         await save_transcription(job_id, events, youtube_url, metadata)
         progress(pct=75)
 
         # ── Step 4: Generate lesson ────────────────────────────────────────
-        progress(
-            step=4,
-            step_name="Generating AI lesson",
-            pct=77,
-            message="Building semantic MIDI log and sending it to Qwen 2.5 "
-                    "to generate your personalised drum lesson.",
-        )
-        semantic_log = build_semantic_log(events, metadata)
-        lesson = await generate_lesson(job_id, semantic_log)
-        await save_exercises(job_id, lesson)
+        if generate_ai_lesson:
+            progress(
+                step=4,
+                step_name="Generating AI lesson",
+                pct=77,
+                message="Building semantic MIDI log and sending it to Qwen 2.5 "
+                        "to generate your personalised drum lesson.",
+            )
+            semantic_log = build_semantic_log(events, metadata)
+            lesson = await generate_lesson(job_id, semantic_log)
+            await save_exercises(job_id, lesson)
 
         progress(
             status="complete",
             step=4,
             step_name="Complete",
             pct=100,
-            message="Analysis complete! Your lesson is ready.",
+            message="Analysis complete!" + (" Your lesson is ready." if generate_ai_lesson else ""),
         )
 
     except BaseException as exc:
@@ -133,6 +137,8 @@ class StartRequest(BaseModel):
     override_bpm: float | None = None
     override_beats_per_bar: int | None = None
     override_beat_unit: int | None = None
+    quantize: bool = False
+    generate_ai_lesson: bool = False
 
 
 class StartResponse(BaseModel):
@@ -165,7 +171,9 @@ async def start_pipeline(body: StartRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run, pipeline_id, body.youtube_url,
                               override_bpm=body.override_bpm,
                               override_beats_per_bar=body.override_beats_per_bar,
-                              override_beat_unit=body.override_beat_unit)
+                              override_beat_unit=body.override_beat_unit,
+                              quantize=body.quantize,
+                              generate_ai_lesson=body.generate_ai_lesson)
     return StartResponse(pipeline_id=pipeline_id)
 
 

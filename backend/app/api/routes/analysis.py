@@ -15,6 +15,7 @@ class AnalyzeRequest(BaseModel):
     override_bpm: float | None = None
     override_beats_per_bar: int | None = None
     override_beat_unit: int | None = None
+    quantize: bool = False
 
 
 class DrumEvent(BaseModel):
@@ -47,7 +48,8 @@ async def analyze_drums(body: AnalyzeRequest):
             None, partial(transcribe, drums_wav,
                           override_bpm=body.override_bpm,
                           override_beats_per_bar=body.override_beats_per_bar,
-                          override_beat_unit=body.override_beat_unit)
+                          override_beat_unit=body.override_beat_unit,
+                          quantize=body.quantize)
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}")
